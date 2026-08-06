@@ -1,16 +1,19 @@
 //! Pure grouping helpers: which space owns a path, and how a run of grouped
 //! rows is labelled. No herdr types, no rendering.
 
-use std::path::Path;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
-use crate::model::Space;
+use crate::model::{normalize_path, Space};
 
 /// Index of the first space (in file order) that owns `path`: the path is one
 /// of the space folders or lives inside one. `None` when nothing matches.
 pub fn space_index_for_path(spaces: &[Space], path: &Path) -> Option<usize> {
+    let normalized = normalized_workspace_path(path);
     spaces
         .iter()
-        .position(|space| space.folders.iter().any(|folder| owns(folder, path)))
+        .position(|space| space.folders.iter().any(|folder| owns(folder, &normalized)))
 }
 
 /// Same as [`space_index_for_path`] but tries the worktree repo root first and
@@ -26,8 +29,35 @@ pub fn space_index_for_workspace(
 }
 
 /// Component-wise containment: `/a/b` owns `/a/b` and `/a/b/c`, never `/a/bc`.
+/// Both sides are expected to already be normalized: `folder` by
+/// [`normalize_path`] at space load/add time, `path` by
+/// [`normalized_workspace_path`] just below.
 fn owns(folder: &Path, path: &Path) -> bool {
     !folder.as_os_str().is_empty() && path.starts_with(folder)
+}
+
+thread_local! {
+    /// `space_index_for_path` runs once per sidebar row on every render
+    /// frame, but `std::fs::canonicalize` is a syscall. Memoize each raw
+    /// workspace path's normalized form so repeated frames for the same
+    /// workspace never re-hit the filesystem. The render loop stays on one
+    /// thread for the life of the process, so in practice this cache is
+    /// warmed once per workspace, not rebuilt every frame.
+    static WORKSPACE_PATH_CACHE: RefCell<HashMap<PathBuf, PathBuf>> =
+        RefCell::new(HashMap::new());
+}
+
+fn normalized_workspace_path(path: &Path) -> PathBuf {
+    WORKSPACE_PATH_CACHE.with(|cache| {
+        if let Some(hit) = cache.borrow().get(path) {
+            return hit.clone();
+        }
+        let normalized = normalize_path(path);
+        cache
+            .borrow_mut()
+            .insert(path.to_path_buf(), normalized.clone());
+        normalized
+    })
 }
 
 /// Sidebar header text for a space, with the number of rows under it.
@@ -57,7 +87,26 @@ pub fn header_run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or(0);
+            let dir = std::env::temp_dir().join(format!("herdr-spaces-grouping-{tag}-{nanos}"));
+            std::fs::create_dir_all(&dir).expect("create temp dir");
+            Self(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn spaces() -> Vec<Space> {
         vec![
@@ -119,6 +168,36 @@ mod tests {
     #[test]
     fn unrelated_path_has_no_space() {
         assert_eq!(space_index_for_path(&spaces(), Path::new("/tmp/x")), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_folder_groups_correctly() {
+        let base = TempDir::new("symlink-group");
+        let real_target = base.0.join("real-project");
+        std::fs::create_dir_all(&real_target).expect("create real target");
+        let link = base.0.join("link-project");
+        std::os::unix::fs::symlink(&real_target, &link).expect("create symlink");
+
+        // The space folder was added as the symlink (as `normalize_path`
+        // would store it at add/load time); the query is a workspace path
+        // reached through the real, canonical directory.
+        let canonical_target = std::fs::canonicalize(&real_target).expect("canonicalize target");
+        let spaces = vec![Space {
+            id: "one".into(),
+            name: "via-symlink".into(),
+            emoji: None,
+            folders: vec![normalize_path(&link)],
+        }];
+
+        assert_eq!(space_index_for_path(&spaces, &canonical_target), Some(0));
+        assert_eq!(
+            space_index_for_path(&spaces, &canonical_target.join("nested")),
+            Some(0)
+        );
+        // The reverse direction also matches: querying through the symlink
+        // itself still resolves to the same normalized target.
+        assert_eq!(space_index_for_path(&spaces, &link), Some(0));
     }
 
     #[test]

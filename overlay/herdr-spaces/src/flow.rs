@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::model::{expand_home, Space};
+use crate::model::{expand_home, normalize_path, Space};
 use crate::store;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -480,7 +480,10 @@ impl PickerState {
         if !env.is_dir(&folder) {
             return Err(format!("not a directory: {}", folder.display()));
         }
-        Ok(folder)
+        // Normalize only after confirming the folder exists and is absolute,
+        // so the "must be absolute" / "not a directory" error messages still
+        // echo back exactly what the user typed.
+        Ok(normalize_path(&folder))
     }
 
     fn space_has_folder_choice(&self, spaces: &[Space]) -> bool {

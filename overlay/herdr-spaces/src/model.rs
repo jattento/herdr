@@ -1,6 +1,6 @@
 //! Data model for spaces: a user-defined group of folders with a label.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -47,7 +47,10 @@ impl Space {
     }
 
     pub fn contains_folder(&self, folder: &Path) -> bool {
-        self.folders.iter().any(|known| known == folder)
+        let normalized = normalize_path(folder);
+        self.folders
+            .iter()
+            .any(|known| normalize_path(known) == normalized)
     }
 }
 
@@ -122,6 +125,50 @@ fn home_dir() -> Option<PathBuf> {
         .filter(|home| !home.as_os_str().is_empty())
 }
 
+/// Expand a leading `~`, then resolve the path to a stable, comparable form:
+/// the real (canonicalized) path when it exists on disk, or a lexically
+/// cleaned absolute path (no filesystem access) when it does not. Two paths
+/// that name the same folder -- via a symlink, `..`, or a relative segment --
+/// normalize to the same value, which is what matching and duplicate
+/// detection need instead of a plain lexical comparison.
+pub(crate) fn normalize_path(path: &Path) -> PathBuf {
+    let expanded = expand_home(path);
+    if let Ok(canonical) = std::fs::canonicalize(&expanded) {
+        return canonical;
+    }
+    lexically_clean(&make_absolute(&expanded))
+}
+
+fn make_absolute(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    }
+}
+
+/// Collapse `.` and `..` components without touching the filesystem, the way
+/// [`std::fs::canonicalize`] would if the path existed.
+fn lexically_clean(path: &Path) -> PathBuf {
+    let mut out: Vec<Component> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match out.last() {
+                Some(Component::Normal(_)) => {
+                    out.pop();
+                }
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                _ => out.push(component),
+            },
+            other => out.push(other),
+        }
+    }
+    out.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,5 +200,31 @@ mod tests {
         assert_eq!(expand_home(Path::new("~/src")), home.join("src"));
         assert_eq!(expand_home(Path::new("~")), home);
         assert_eq!(expand_home(Path::new("/abs")), PathBuf::from("/abs"));
+    }
+
+    #[test]
+    fn normalize_path_expands_tilde_when_target_is_missing() {
+        let home = home_dir().expect("home directory");
+        let normalized = normalize_path(Path::new("~/herdr-spaces-test-missing-dir/./sub"));
+        assert_eq!(
+            normalized,
+            home.join("herdr-spaces-test-missing-dir").join("sub")
+        );
+    }
+
+    #[test]
+    fn normalize_path_falls_back_lexically_when_missing() {
+        let messy = Path::new("/definitely/does/not/exist/./deep/../path");
+        assert_eq!(
+            normalize_path(messy),
+            PathBuf::from("/definitely/does/not/exist/path")
+        );
+    }
+
+    #[test]
+    fn contains_folder_matches_through_dot_dot_normalization() {
+        let space = Space::new("keyway", None, PathBuf::from("/abs/a"));
+        assert!(space.contains_folder(Path::new("/abs/nope/../a")));
+        assert!(!space.contains_folder(Path::new("/abs/b")));
     }
 }
