@@ -28,6 +28,8 @@ use self::dialogs::{
 };
 // overlay(spaces)
 use self::dialogs::render_space_picker_overlay;
+// overlay(tab archive)
+use self::dialogs::render_tab_archive_picker_overlay;
 use self::keybind_help::render_keybind_help_overlay;
 use self::menus::{
     render_context_menu, render_copy_mode_overlay, render_global_launcher_menu,
@@ -195,7 +197,7 @@ fn desktop_tab_bar_and_terminal_area(
     ws: &crate::workspace::Workspace,
     main_area: Rect,
 ) -> (Rect, Rect) {
-    let hide_single_tab_bar = app.hide_tab_bar_when_single_tab && ws.tabs.len() == 1;
+    let hide_single_tab_bar = app.hide_tab_bar_when_single_tab && ws.visible_tab_count() == 1;
     if !hide_single_tab_bar && main_area.height > 1 {
         match app.tab_bar_position {
             crate::config::TabBarPositionConfig::Top => {
@@ -457,6 +459,8 @@ pub fn render_with_runtime_registry(
         }
         // overlay(spaces)
         Mode::SpacePicker => render_space_picker_overlay(app, frame, frame.area()),
+        // overlay(tab archive)
+        Mode::TabArchivePicker => render_tab_archive_picker_overlay(app, frame, frame.area()),
         Mode::ConfirmRemoveWorktree => render_remove_worktree_overlay(app, frame, frame.area()),
         Mode::GlobalMenu => render_global_launcher_menu(app, frame),
         Mode::KeybindHelp => render_keybind_help_overlay(app, frame),
@@ -869,6 +873,12 @@ mod tests {
         assert!(app.view.tab_hit_areas.iter().all(|rect| rect.width > 0));
         assert!(app.view.new_tab_hit_area.width > 0);
 
+        assert!(app.workspaces[0].archive_tab(1));
+        compute_view(&mut app, Rect::new(0, 0, 80, 20));
+        assert_eq!(app.view.tab_bar_rect, Rect::default());
+        assert_eq!(app.view.terminal_area, single_tab_terminal_area);
+
+        assert!(app.workspaces[0].unarchive_tab(1));
         assert!(app.workspaces[0].close_tab(1));
         compute_view(&mut app, Rect::new(0, 0, 80, 20));
 

@@ -326,6 +326,8 @@ pub struct Keybinds {
     pub focus_agent: Vec<IndexedKeybind>,
     pub new_tab: ActionKeybinds,
     pub rename_tab: ActionKeybinds,
+    pub archive_tab: ActionKeybinds,
+    pub archived_tabs: ActionKeybinds,
     pub previous_tab: ActionKeybinds,
     pub next_tab: ActionKeybinds,
     pub switch_tab: Vec<IndexedKeybind>,
@@ -488,6 +490,8 @@ impl Config {
             focus_agent: Vec::new(),
             new_tab: empty_action!(),
             rename_tab: empty_action!(),
+            archive_tab: empty_action!(),
+            archived_tabs: empty_action!(),
             previous_tab: empty_action!(),
             next_tab: empty_action!(),
             switch_tab: Vec::new(),
@@ -619,6 +623,8 @@ impl Config {
             );
             apply_action!(keybinds.new_tab, new_tab, source);
             apply_action!(keybinds.rename_tab, rename_tab, source);
+            apply_action!(keybinds.archive_tab, archive_tab, source);
+            apply_action!(keybinds.archived_tabs, archived_tabs, source);
             apply_action!(keybinds.previous_tab, previous_tab, source);
             apply_action!(keybinds.next_tab, next_tab, source);
             apply_indexed!(
@@ -1595,6 +1601,16 @@ next_tab = "prefix+n"
     fn back_and_forth_keybinds_are_unset_by_default() {
         let kb = Config::default().keybinds();
         assert!(kb.last_pane.bindings.is_empty());
+    }
+
+    #[test]
+    fn archive_keybinds_use_prefix_defaults() {
+        let kb = Config::default().keybinds();
+        assert_eq!(kb.archive_tab.prefix_rhs_label().as_deref(), Some("a"));
+        assert_eq!(
+            kb.archived_tabs.prefix_rhs_label().as_deref(),
+            Some("shift+a")
+        );
     }
 
     #[test]

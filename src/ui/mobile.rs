@@ -189,9 +189,11 @@ pub(crate) fn mobile_switcher_target_at(
             return Some(MobileSwitcherTarget::NewTab);
         }
         cursor += 1;
-        let tabs_end = cursor + ws.tabs.len();
+        let tabs_end = cursor + ws.visible_tab_count();
         if doc_row >= cursor && doc_row < tabs_end {
-            return Some(MobileSwitcherTarget::Tab(doc_row - cursor));
+            return ws
+                .tab_at_visible_position(doc_row - cursor)
+                .map(MobileSwitcherTarget::Tab);
         }
         cursor = tabs_end;
     }
@@ -372,10 +374,12 @@ fn mobile_tab_status(ws: &crate::workspace::Workspace) -> String {
     let tab_label = ws
         .tab_display_name(ws.active_tab)
         .unwrap_or_else(|| (ws.active_tab + 1).to_string());
-    if ws.tabs.len() <= 1 {
+    let count = ws.visible_tab_count();
+    if count <= 1 {
         format!("tab {tab_label}")
     } else {
-        format!("tab {tab_label} · {}/{}", ws.active_tab + 1, ws.tabs.len())
+        let position = ws.visible_position(ws.active_tab).unwrap_or(0) + 1;
+        format!("tab {tab_label} · {position}/{count}")
     }
 }
 
@@ -458,7 +462,7 @@ fn mobile_switcher_content_height(app: &AppState) -> usize {
     let tabs_h = app
         .active
         .and_then(|idx| app.workspaces.get(idx))
-        .map(|ws| 2 + ws.tabs.len())
+        .map(|ws| 2 + ws.visible_tab_count())
         .unwrap_or(0);
     let agents_h = mobile_agents_block_height(app);
     let menu_h = 1 + app.global_menu_labels().len();
@@ -679,7 +683,7 @@ fn render_mobile_switcher_content(
             p,
         );
         doc_y += 1;
-        for (idx, tab) in ws.tabs.iter().enumerate() {
+        for (idx, tab) in ws.visible_tabs() {
             let active = idx == ws.active_tab;
             let bg = mobile_item_bg(false, active, p);
             let display_name = ws
@@ -688,7 +692,8 @@ fn render_mobile_switcher_content(
             let label = if tab.is_auto_named() {
                 format!("tab {display_name}")
             } else {
-                format!("{} · {display_name}", idx + 1)
+                let position = ws.visible_position(idx).unwrap_or(0) + 1;
+                format!("{position} · {display_name}")
             };
             let title = Line::from(vec![
                 Span::styled("  ", Style::default().bg(bg)),
@@ -1424,6 +1429,7 @@ mod tests {
             agent_hit,
             Some(MobileSwitcherTarget::Agent { .. })
         ));
+        app.mobile_switcher_scroll = 0;
         let workspace_hit = mobile_switcher_target_at(&app, viewport.x + 2, viewport.y + 7);
         assert_eq!(workspace_hit, Some(MobileSwitcherTarget::Workspace(0)));
     }
@@ -1507,6 +1513,27 @@ mod tests {
         workspace.active_tab = 1;
 
         assert_eq!(mobile_tab_status(&workspace), "tab 2 · 2/2");
+    }
+
+    #[test]
+    fn mobile_switcher_skips_archived_tab_and_returns_raw_index() {
+        let mut app = crate::app::state::AppState::test_new();
+        let mut workspace = crate::workspace::Workspace::test_new("mobile-tabs");
+        let archived = workspace.test_add_tab(Some("archived"));
+        let visible = workspace.test_add_tab(Some("visible"));
+        assert!(workspace.archive_tab(archived));
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+        app.selected = 0;
+        app.view.mobile_header_rect = Rect::new(0, 0, 40, 2);
+        app.view.terminal_area = Rect::new(0, 2, 40, 18);
+
+        let viewport = mobile_switcher_areas(&app).viewport;
+        let second_visible_tab =
+            mobile_switcher_target_at(&app, viewport.x + 2, viewport.y + 7);
+
+        assert_eq!(second_visible_tab, Some(MobileSwitcherTarget::Tab(visible)));
+        assert_eq!(mobile_switcher_content_height(&app), 15);
     }
 
     #[test]

@@ -67,6 +67,11 @@ pub fn body_lines(
             (Tone::Row, Tone::Detail)
         };
         let marker = if highlighted { "\u{203a}" } else { " " };
+        let mark = match row.kind {
+            crate::flow::RowKind::Folder(_) if row.marked => "[x] ",
+            crate::flow::RowKind::Folder(_) => "[ ] ",
+            _ => "",
+        };
         let detail = truncate(&row.detail, width / 3);
         let detail_gap = usize::from(!detail.is_empty());
         let label_width = width
@@ -78,7 +83,7 @@ pub fn body_lines(
                 truncate_left(&row.label, label_width.saturating_sub(2))
             )
         } else {
-            truncate(&format!("{marker} {}", row.label), label_width)
+            truncate(&format!("{marker} {mark}{}", row.label), label_width)
         };
         let pad = width
             .saturating_sub(label.width())
@@ -218,6 +223,27 @@ mod tests {
         let lines = body_lines(&picker, &spaces(), 40, 8);
         assert_eq!(lines[2][0].1, Tone::RowSelected);
         assert_eq!(lines[3][0].1, Tone::Row);
+    }
+
+    #[test]
+    fn marked_folders_render_with_a_visible_checkbox() {
+        let mut spaces = vec![Space {
+            id: "one".into(),
+            name: "keyway".into(),
+            emoji: None,
+            folders: vec![PathBuf::from("/work/a"), PathBuf::from("/work/b")],
+        }];
+        let env = crate::flow::FsEnv::new(PathBuf::from("/nonexistent/spaces.json"));
+        let mut picker = PickerState::new();
+        picker.on_key(Key::Enter, &mut spaces, &env);
+        picker.on_key(Key::Char(' '), &mut spaces, &env);
+
+        let lines = body_lines(&picker, &spaces, 40, 8);
+        let rendered = lines[2]
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect::<String>();
+        assert!(rendered.starts_with("\u{203a} [x] a"), "{rendered}");
     }
 
     #[test]

@@ -925,21 +925,25 @@ impl AppState {
                 match mouse.kind {
                     MouseEventKind::ScrollUp => {
                         if let Some(ws) = self.active.and_then(|i| self.workspaces.get(i)) {
-                            if !ws.tabs.is_empty() {
-                                let prev = if ws.active_tab == 0 {
-                                    ws.tabs.len() - 1
+                            if let Some(current) = ws.visible_position(ws.active_tab) {
+                                let prev = if current == 0 {
+                                    ws.visible_tab_count() - 1
                                 } else {
-                                    ws.active_tab - 1
+                                    current - 1
                                 };
-                                return Some(MouseAction::FocusTab { tab_idx: prev });
+                                if let Some(tab_idx) = ws.tab_at_visible_position(prev) {
+                                    return Some(MouseAction::FocusTab { tab_idx });
+                                }
                             }
                         }
                     }
                     MouseEventKind::ScrollDown => {
                         if let Some(ws) = self.active.and_then(|i| self.workspaces.get(i)) {
-                            if !ws.tabs.is_empty() {
-                                let next = (ws.active_tab + 1) % ws.tabs.len();
-                                return Some(MouseAction::FocusTab { tab_idx: next });
+                            if let Some(current) = ws.visible_position(ws.active_tab) {
+                                let next = (current + 1) % ws.visible_tab_count();
+                                if let Some(tab_idx) = ws.tab_at_visible_position(next) {
+                                    return Some(MouseAction::FocusTab { tab_idx });
+                                }
                             }
                         }
                     }
@@ -1330,27 +1334,23 @@ impl AppState {
             .collect();
         let (first_idx, first_rect) = *visible_tabs.first()?;
         let (last_idx, last_rect) = *visible_tabs.last()?;
+        let ws = self.active.and_then(|idx| self.workspaces.get(idx))?;
+        let first_tab = ws.visible_tabs().next().map(|(idx, _)| idx)?;
+        let last_tab = ws.visible_tabs().last().map(|(idx, _)| idx)?;
 
         if self.on_tab_scroll_left_button(col, row) {
-            return Some(0);
+            return Some(first_tab);
         }
         if self.on_tab_scroll_right_button(col, row) {
-            return self
-                .active
-                .and_then(|idx| self.workspaces.get(idx))
-                .map(|ws| ws.tabs.len());
+            return Some(last_tab.saturating_add(1));
         }
 
-        let left_edge = if first_idx == 0 {
+        let left_edge = if first_idx == first_tab {
             first_rect.x
         } else {
             self.view.tab_scroll_left_hit_area.x + self.view.tab_scroll_left_hit_area.width
         };
-        let right_edge = if self
-            .active
-            .and_then(|idx| self.workspaces.get(idx))
-            .is_some_and(|ws| last_idx + 1 >= ws.tabs.len())
-        {
+        let right_edge = if last_idx == last_tab {
             last_rect.x + last_rect.width
         } else {
             self.view.tab_scroll_right_hit_area.x.saturating_sub(1)
@@ -1360,7 +1360,11 @@ impl AppState {
             return Some(first_idx);
         }
         if col >= right_edge {
-            return Some(last_idx + 1);
+            return ws
+                .visible_tabs()
+                .find(|(next_idx, _)| *next_idx > last_idx)
+                .map(|(next_idx, _)| next_idx)
+                .or_else(|| Some(last_tab.saturating_add(1)));
         }
 
         for (idx, rect) in visible_tabs {
@@ -1369,11 +1373,15 @@ impl AppState {
                 return Some(idx);
             }
             if col < rect.x + rect.width {
-                return Some(idx + 1);
+                return ws
+                    .visible_tabs()
+                    .find(|(next_idx, _)| *next_idx > idx)
+                    .map(|(next_idx, _)| next_idx)
+                    .or_else(|| Some(last_tab.saturating_add(1)));
             }
         }
 
-        Some(last_idx + 1)
+        Some(last_tab.saturating_add(1))
     }
 
     pub(super) fn on_new_tab_button(&self, col: u16, row: u16) -> bool {

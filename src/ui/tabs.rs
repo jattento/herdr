@@ -47,14 +47,14 @@ fn layout_tab_hit_areas(ws: &crate::workspace::Workspace, area: Rect, scroll: us
 
     let mut x = area.x;
     let right = area.x + area.width;
-    for (idx, rect) in rects.iter_mut().enumerate().skip(scroll) {
+    for (idx, _) in ws.visible_tabs().filter(|(idx, _)| *idx >= scroll) {
         if x >= right {
             break;
         }
         let desired = tab_width(ws, idx);
         let remaining = right.saturating_sub(x);
         let width = desired.min(remaining).max(1);
-        *rect = Rect::new(x, area.y, width, 1);
+        rects[idx] = Rect::new(x, area.y, width, 1);
         x = x.saturating_add(width + 1);
     }
     rects
@@ -65,7 +65,10 @@ fn centered_tab_scroll(ws: &crate::workspace::Workspace, area: Rect) -> usize {
     let mut best_distance = u16::MAX;
     let viewport_center = area.x.saturating_mul(2).saturating_add(area.width);
 
-    for scroll in 0..=ws.active_tab {
+    for (scroll, _) in ws
+        .visible_tabs()
+        .take_while(|(idx, _)| *idx <= ws.active_tab)
+    {
         let rects = layout_tab_hit_areas(ws, area, scroll);
         let Some(active_rect) = rects.get(ws.active_tab).copied() else {
             continue;
@@ -98,13 +101,27 @@ fn trailing_tab_controls_x(tab_hit_areas: &[Rect], fallback_x: u16) -> u16 {
 }
 
 fn max_tab_scroll(ws: &crate::workspace::Workspace, area: Rect) -> usize {
-    (0..ws.tabs.len())
+    let last_visible = ws.visible_tabs().last().map(|(idx, _)| idx).unwrap_or(0);
+    ws.visible_tabs()
+        .map(|(idx, _)| idx)
         .find(|&scroll| {
             layout_tab_hit_areas(ws, area, scroll)
-                .last()
+                .get(last_visible)
                 .is_some_and(|rect| rect.width > 0)
         })
         .unwrap_or(0)
+}
+
+fn normalized_tab_scroll(
+    ws: &crate::workspace::Workspace,
+    current_scroll: usize,
+    max_scroll: usize,
+) -> usize {
+    ws.visible_tabs()
+        .map(|(idx, _)| idx)
+        .find(|idx| *idx >= current_scroll)
+        .unwrap_or(max_scroll)
+        .min(max_scroll)
 }
 
 pub(crate) fn compute_tab_bar_view(
@@ -123,7 +140,7 @@ pub(crate) fn compute_tab_bar_view(
         let scroll = if follow_active {
             centered_tab_scroll(ws, area).min(max_scroll)
         } else {
-            current_scroll.min(max_scroll)
+            normalized_tab_scroll(ws, current_scroll, max_scroll)
         };
         return TabBarView {
             scroll,
@@ -142,7 +159,9 @@ pub(crate) fn compute_tab_bar_view(
         area.height,
     );
     let all_tabs = layout_tab_hit_areas(ws, all_tabs_area, 0);
-    let overflow = all_tabs.iter().any(|rect| rect.width == 0);
+    let overflow = ws
+        .visible_tabs()
+        .any(|(idx, _)| all_tabs.get(idx).is_none_or(|rect| rect.width == 0));
     if !overflow {
         let new_tab_x = trailing_tab_controls_x(&all_tabs, area.x);
         let new_tab_hit_area = Rect::new(
@@ -152,7 +171,7 @@ pub(crate) fn compute_tab_bar_view(
             1,
         );
         return TabBarView {
-            scroll: 0,
+            scroll: ws.visible_tabs().next().map(|(idx, _)| idx).unwrap_or(0),
             tab_hit_areas: all_tabs,
             scroll_left_hit_area: Rect::default(),
             scroll_right_hit_area: Rect::default(),
@@ -175,7 +194,7 @@ pub(crate) fn compute_tab_bar_view(
     let scroll = if follow_active {
         centered_tab_scroll(ws, tab_area).min(max_scroll)
     } else {
-        current_scroll.min(max_scroll)
+        normalized_tab_scroll(ws, current_scroll, max_scroll)
     };
     let tab_hit_areas = layout_tab_hit_areas(ws, tab_area, scroll);
     let trailing_x = trailing_tab_controls_x(&tab_hit_areas, tab_area_x).min(tab_area_right);
@@ -218,8 +237,11 @@ fn tab_drop_indicator_x(
     let first_visible = visible_tabs.clone().next()?;
     let last_visible = visible_tabs.next_back().unwrap_or(first_visible);
 
-    if insert_idx == 0 {
-        return Some(if first_visible.0 == 0 {
+    let first_tab = ws.visible_tabs().next().map(|(idx, _)| idx)?;
+    let last_tab = ws.visible_tabs().last().map(|(idx, _)| idx)?;
+
+    if insert_idx <= first_visible.0 {
+        return Some(if first_visible.0 == first_tab {
             first_visible.1.x
         } else {
             app.view.tab_scroll_left_hit_area.x + app.view.tab_scroll_left_hit_area.width
@@ -236,12 +258,15 @@ fn tab_drop_indicator_x(
         return Some(rect.x.saturating_sub(1));
     }
 
-    if insert_idx >= ws.tabs.len() {
-        return Some(if last_visible.0 + 1 >= ws.tabs.len() {
+    if insert_idx >= last_tab.saturating_add(1) {
+        return Some(if last_visible.0 == last_tab {
             last_visible.1.x + last_visible.1.width
         } else {
             app.view.tab_scroll_right_hit_area.x.saturating_sub(1)
         });
+    }
+    if insert_idx > last_visible.0 {
+        return Some(app.view.tab_scroll_right_hit_area.x.saturating_sub(1));
     }
 
     None
@@ -279,9 +304,14 @@ pub(super) fn render_tab_bar(app: &AppState, frame: &mut Frame, area: Rect) {
         .rev()
         .find(|(_, rect)| rect.width > 0)
         .map(|(idx, _)| idx);
-    let can_scroll_left = app.view.tab_scroll_left_hit_area.width > 0 && app.tab_scroll > 0;
+    let can_scroll_left = app.view.tab_scroll_left_hit_area.width > 0
+        && ws
+            .visible_position(app.tab_scroll)
+            .is_some_and(|position| position > 0);
     let can_scroll_right = app.view.tab_scroll_right_hit_area.width > 0
-        && last_visible_idx.is_some_and(|idx| idx + 1 < ws.tabs.len());
+        && last_visible_idx
+            .and_then(|idx| ws.visible_position(idx))
+            .is_some_and(|pos| pos + 1 < ws.visible_tab_count());
 
     if app.mouse_capture && app.view.tab_scroll_left_hit_area.width > 0 {
         let style = if can_scroll_left {
@@ -313,7 +343,7 @@ pub(super) fn render_tab_bar(app: &AppState, frame: &mut Frame, area: Rect) {
         );
     }
 
-    for (idx, tab) in ws.tabs.iter().enumerate() {
+    for (idx, tab) in ws.visible_tabs() {
         let Some(rect) = app.view.tab_hit_areas.get(idx).copied() else {
             break;
         };
@@ -367,7 +397,10 @@ pub(super) fn render_tab_bar(app: &AppState, frame: &mut Frame, area: Rect) {
         );
     }
 
-    if first_visible_idx.is_some_and(|idx| idx > 0) {
+    if first_visible_idx
+        .and_then(|idx| ws.visible_position(idx))
+        .is_some_and(|pos| pos > 0)
+    {
         let x = if app.mouse_capture && app.view.tab_scroll_left_hit_area.width > 0 {
             app.view.tab_scroll_left_hit_area.x + app.view.tab_scroll_left_hit_area.width
         } else {
@@ -379,7 +412,10 @@ pub(super) fn render_tab_bar(app: &AppState, frame: &mut Frame, area: Rect) {
                 .set_style(Style::default().fg(p.overlay0));
         }
     }
-    if last_visible_idx.is_some_and(|idx| idx + 1 < ws.tabs.len()) {
+    if last_visible_idx
+        .and_then(|idx| ws.visible_position(idx))
+        .is_some_and(|pos| pos + 1 < ws.visible_tab_count())
+    {
         let x = if app.mouse_capture && app.view.tab_scroll_right_hit_area.width > 0 {
             app.view.tab_scroll_right_hit_area.x.saturating_sub(1)
         } else {

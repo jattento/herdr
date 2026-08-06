@@ -198,6 +198,20 @@ impl AppState {
 
     pub(crate) fn global_menu_labels(&self) -> Vec<&'static str> {
         let mut labels = vec!["settings", "keybinds", "reload config"];
+        if self
+            .active
+            .and_then(|idx| self.workspaces.get(idx))
+            .is_some_and(|ws| ws.visible_tab_count() > 1)
+        {
+            labels.push("archive tab");
+        }
+        if self
+            .active
+            .and_then(|idx| self.workspaces.get(idx))
+            .is_some_and(|ws| ws.visible_tab_count() < ws.tabs.len())
+        {
+            labels.push("archived tabs...");
+        }
         if self.update_available.is_some() {
             labels.push("update ready");
         } else if self.latest_release_notes_available {
@@ -1522,6 +1536,64 @@ mod tests {
         assert_eq!(app.state.workspaces[0].tabs[2].number, 1);
         assert_eq!(app.state.workspaces[0].tabs[2].root_pane, moved_root);
         assert_eq!(app.state.workspaces[0].active_tab, 2);
+    }
+
+    #[test]
+    fn tab_drop_across_archived_hole_uses_next_visible_raw_boundary() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("test");
+        ws.test_add_tab(Some("left"));
+        let archived = ws.test_add_tab(Some("archived"));
+        let right = ws.test_add_tab(Some("right"));
+        assert!(ws.archive_tab(archived));
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        assert_eq!(app.state.view.tab_hit_areas[archived], Rect::default());
+        let source = app.state.view.tab_hit_areas[0];
+        let right_rect = app.state.view.tab_hit_areas[right];
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            source.x + 1,
+            source.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            right_rect.x,
+            right_rect.y,
+        ));
+        assert!(matches!(
+            app.state.drag.as_ref().map(|drag| &drag.target),
+            Some(DragTarget::TabReorder {
+                ws_idx: 0,
+                source_tab_idx: 0,
+                insert_idx: Some(3),
+            })
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            right_rect.x,
+            right_rect.y,
+        ));
+
+        assert_eq!(
+            app.state.workspaces[0]
+                .tabs
+                .iter()
+                .map(|tab| tab.number)
+                .collect::<Vec<_>>(),
+            vec![2, 3, 1, 4]
+        );
+        assert_eq!(
+            app.state.workspaces[0]
+                .visible_tabs()
+                .map(|(_, tab)| tab.number)
+                .collect::<Vec<_>>(),
+            vec![2, 1, 4]
+        );
     }
 
     fn temp_git_repo(branch: &str) -> std::path::PathBuf {

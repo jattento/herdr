@@ -681,6 +681,7 @@ dependencies = [
  "crossterm",
  "ctrlc",
  "herdr-spaces",
+ "herdr-tab-archive",
  "interprocess",
  "jsonc-parser",
  "libc",
@@ -709,6 +710,13 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "unicode-width",
+]
+
+[[package]]
+name = "herdr-tab-archive"
+version = "0.1.0"
+dependencies = [
  "unicode-width",
 ]
 

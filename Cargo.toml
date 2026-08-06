@@ -22,7 +22,7 @@ include = [
 # overlay(spaces): the fork keeps its own logic in overlay/ crates. The root
 # package stays the default build/test target.
 [workspace]
-members = ["overlay/herdr-spaces"]
+members = ["overlay/herdr-spaces", "overlay/herdr-tab-archive"]
 default-members = ["."]
 
 [dependencies]
@@ -34,6 +34,7 @@ clap_complete = "4.5"
 crossterm = "0.29"
 ctrlc = { version = "3", features = ["termination"] }
 herdr-spaces = { path = "overlay/herdr-spaces" }
+herdr-tab-archive = { path = "overlay/herdr-tab-archive" }
 interprocess = "2.4.2"
 jsonc-parser = { version = "0.33.1", default-features = false, features = ["cst", "serde_json"] }
 libc = "0.2"

@@ -882,6 +882,77 @@ pub(super) fn render_space_picker_overlay(app: &AppState, frame: &mut Frame, are
     render_action_button(frame, back_rect, Some("esc"), "back", plain);
 }
 
+// overlay(tab archive): searchable current-workspace archive. Flow and line
+// composition live in the overlay crate; this call site only maps tones.
+const TAB_ARCHIVE_POPUP_WIDTH: u16 = 64;
+
+pub(super) fn render_tab_archive_picker_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
+    let Some(picker) = app.tab_archive_picker.as_ref() else {
+        return;
+    };
+    let rows = app.archived_tab_rows();
+
+    super::dim_background(frame, area);
+    let height = (rows.len() as u16).saturating_add(6).clamp(9, 22);
+    let Some(inner) =
+        render_modal_shell(frame, area, TAB_ARCHIVE_POPUP_WIDTH, height, &app.palette)
+    else {
+        return;
+    };
+    render_modal_header(
+        frame,
+        Rect::new(inner.x, inner.y, inner.width, 1),
+        "archived tabs",
+        &app.palette,
+    );
+    let body = herdr_tab_archive::view::body_lines(
+        picker,
+        &rows,
+        inner.width,
+        usize::from(inner.height.saturating_sub(4)),
+    );
+    let lines = body
+        .iter()
+        .map(|segments| {
+            Line::from(
+                segments
+                    .iter()
+                    .map(|(text, tone)| {
+                        let p = &app.palette;
+                        let style = match tone {
+                            herdr_tab_archive::Tone::Accent => {
+                                Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+                            }
+                            herdr_tab_archive::Tone::Text => Style::default().fg(p.text),
+                            herdr_tab_archive::Tone::Dim => Style::default().fg(p.overlay0),
+                            herdr_tab_archive::Tone::Separator => Style::default().fg(p.surface1),
+                            herdr_tab_archive::Tone::Row => Style::default().fg(p.subtext0),
+                            herdr_tab_archive::Tone::RowSelected => Style::default()
+                                .fg(p.text)
+                                .bg(p.surface0)
+                                .add_modifier(Modifier::BOLD),
+                            herdr_tab_archive::Tone::Detail => Style::default().fg(p.overlay0),
+                            herdr_tab_archive::Tone::DetailSelected => {
+                                Style::default().fg(p.subtext0).bg(p.surface0)
+                            }
+                        };
+                        Span::styled(text.clone(), style)
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(lines),
+        Rect::new(
+            inner.x,
+            inner.y.saturating_add(1),
+            inner.width,
+            inner.height.saturating_sub(1),
+        ),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{

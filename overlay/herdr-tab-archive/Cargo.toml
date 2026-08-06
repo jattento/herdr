@@ -1,0 +1,10 @@
+[package]
+name = "herdr-tab-archive"
+version = "0.1.0"
+edition = "2021"
+description = "archived-tab picker flow and view for the herdr fork"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+unicode-width = "0.2"

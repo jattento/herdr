@@ -239,13 +239,13 @@ impl App {
                 }
             }
             NavigateAction::SwitchTab(idx) => {
-                if self
+                if let Some(tab_idx) = self
                     .state
                     .active
                     .and_then(|ws_idx| self.state.workspaces.get(ws_idx))
-                    .is_some_and(|ws| idx < ws.tabs.len())
+                    .and_then(|ws| ws.tab_at_visible_position(idx))
                 {
-                    self.focus_tab_idx_via_api(idx);
+                    self.focus_tab_idx_via_api(tab_idx);
                     leave_navigate_mode(&mut self.state);
                 }
             }
@@ -307,6 +307,13 @@ impl App {
             }
             NavigateAction::RenameTab => {
                 super::modal::open_rename_active_tab(&mut self.state, false)
+            }
+            NavigateAction::ArchiveTab => {
+                super::modal::archive_active_tab(&mut self.state);
+                leave_navigate_mode(&mut self.state);
+            }
+            NavigateAction::ArchivedTabs => {
+                super::modal::open_archived_tabs(&mut self.state);
             }
             NavigateAction::PreviousTab => {
                 if let Some(tab_idx) = self.relative_tab(-1) {
@@ -726,10 +733,13 @@ impl App {
             .state
             .active
             .and_then(|ws_idx| self.state.workspaces.get(ws_idx))?;
-        if ws.tabs.is_empty() {
+        let count = ws.visible_tab_count();
+        if count == 0 {
             return None;
         }
-        Some((ws.active_tab as isize + delta).rem_euclid(ws.tabs.len() as isize) as usize)
+        let current = ws.visible_position(ws.active_tab)?;
+        let next = (current as isize + delta).rem_euclid(count as isize) as usize;
+        ws.tab_at_visible_position(next)
     }
 
     fn agent_entry_target(&self, idx: usize) -> Option<(usize, crate::layout::PaneId)> {
@@ -1347,6 +1357,8 @@ pub(crate) enum NavigateAction {
     NextAgent,
     NewTab,
     RenameTab,
+    ArchiveTab,
+    ArchivedTabs,
     PreviousTab,
     NextTab,
     CloseTab,
@@ -1488,6 +1500,8 @@ fn non_indexed_action_for_key(
         (&kb.next_agent, NavigateAction::NextAgent),
         (&kb.new_tab, NavigateAction::NewTab),
         (&kb.rename_tab, NavigateAction::RenameTab),
+        (&kb.archive_tab, NavigateAction::ArchiveTab),
+        (&kb.archived_tabs, NavigateAction::ArchivedTabs),
         (&kb.previous_tab, NavigateAction::PreviousTab),
         (&kb.next_tab, NavigateAction::NextTab),
         (&kb.close_tab, NavigateAction::CloseTab),
@@ -1634,12 +1648,12 @@ pub(super) fn execute_navigate_action_in_context(
             }
         }
         NavigateAction::SwitchTab(idx) => {
-            let tab_exists = state
+            let tab_idx = state
                 .active
                 .and_then(|ws_idx| state.workspaces.get(ws_idx))
-                .is_some_and(|ws| idx < ws.tabs.len());
-            if tab_exists {
-                state.switch_tab(idx);
+                .and_then(|ws| ws.tab_at_visible_position(idx));
+            if let Some(tab_idx) = tab_idx {
+                state.switch_tab(tab_idx);
                 leave_navigate_mode(state);
             }
         }
@@ -1679,6 +1693,11 @@ pub(super) fn execute_navigate_action_in_context(
             }
         }
         NavigateAction::RenameTab => super::modal::open_rename_active_tab(state, false),
+        NavigateAction::ArchiveTab => {
+            super::modal::archive_active_tab(state);
+            leave_navigate_mode(state);
+        }
+        NavigateAction::ArchivedTabs => super::modal::open_archived_tabs(state),
         NavigateAction::PreviousTab => {
             state.previous_tab();
             leave_navigate_mode(state);
@@ -2609,6 +2628,38 @@ last_pane = "prefix+tab"
         );
 
         assert_eq!(action, Some(NavigateAction::SwitchTab(2)));
+    }
+
+    #[test]
+    fn prefix_number_switches_to_nth_visible_tab() {
+        let mut app = app_with_test_workspaces(&["test"]);
+        let archived = app.state.workspaces[0].test_add_tab(Some("archived"));
+        let target = app.state.workspaces[0].test_add_tab(Some("target"));
+        assert!(app.state.workspaces[0].archive_tab(archived));
+        app.state.mode = Mode::Prefix;
+
+        app.handle_prefix_key(TerminalKey::new(
+            KeyCode::Char('2'),
+            KeyModifiers::empty(),
+        ));
+
+        assert_eq!(app.state.workspaces[0].active_tab, target);
+        assert_eq!(app.state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn relative_tab_skips_archived_tabs_in_both_directions() {
+        let mut app = app_with_test_workspaces(&["test"]);
+        let archived = app.state.workspaces[0].test_add_tab(Some("archived"));
+        let last = app.state.workspaces[0].test_add_tab(Some("last"));
+        assert!(app.state.workspaces[0].archive_tab(archived));
+
+        assert_eq!(app.relative_tab(1), Some(last));
+        assert_eq!(app.relative_tab(-1), Some(last));
+
+        app.state.workspaces[0].switch_tab(last);
+        assert_eq!(app.relative_tab(1), Some(0));
+        assert_eq!(app.relative_tab(-1), Some(0));
     }
 
     #[test]

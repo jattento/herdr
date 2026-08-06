@@ -85,6 +85,8 @@ struct LegacyWorkspaceSnapshot {
 pub struct TabSnapshot {
     #[serde(default)]
     pub custom_name: Option<String>,
+    #[serde(default)]
+    pub archived: bool,
     pub layout: LayoutSnapshot,
     pub panes: HashMap<u32, PaneSnapshot>,
     pub zoomed: bool,
@@ -146,6 +148,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
         let identity_cwd = legacy_identity_cwd(&snap);
         let tab = TabSnapshot {
             custom_name: None,
+            archived: false,
             layout: snap.layout,
             panes: snap.panes,
             zoomed: snap.zoomed,
@@ -373,6 +376,7 @@ fn capture_tab(
     }
     TabSnapshot {
         custom_name: tab.custom_name.clone(),
+        archived: tab.archived,
         layout: capture_node(tab.layout.root()),
         panes,
         zoomed: tab.zoomed,
@@ -674,6 +678,7 @@ mod tests {
                 next_public_tab_number: 2,
                 tabs: vec![TabSnapshot {
                     custom_name: Some("api".to_string()),
+                    archived: false,
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,
                         ratio: 0.5,
@@ -849,6 +854,32 @@ mod tests {
         assert_eq!(workspace.active_tab, second_tab);
         assert_eq!(workspace.tabs[0].custom_name.as_deref(), Some("main"));
         assert_eq!(workspace.tabs[1].custom_name.as_deref(), Some("logs"));
+    }
+
+    #[test]
+    fn snapshot_round_trip_preserves_archived_tab() {
+        let mut state = state_with_workspaces(&["one"]);
+        let archived = state.workspaces[0].test_add_tab(Some("logs"));
+        assert!(state.workspaces[0].archive_tab(archived));
+
+        let snapshot = capture_from_state(&state);
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let restored = parse_snapshot(&json).unwrap();
+
+        assert!(!restored.workspaces[0].tabs[0].archived);
+        assert!(restored.workspaces[0].tabs[archived].archived);
+    }
+
+    #[test]
+    fn tab_snapshot_archived_defaults_false() {
+        let tab: TabSnapshot = serde_json::from_value(serde_json::json!({
+            "layout": { "Pane": 0 },
+            "panes": {},
+            "zoomed": false
+        }))
+        .unwrap();
+
+        assert!(!tab.archived);
     }
 
     #[test]
@@ -1236,6 +1267,7 @@ mod tests {
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
                     custom_name: None,
+                    archived: false,
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,
                         ratio: 0.5,

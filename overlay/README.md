@@ -8,6 +8,7 @@ directory; upstream never writes here, so it never conflicts on a sync.
 ```
 overlay/
   herdr-spaces/     <- Rust crate: Codex-style spaces (name + emoji + folders)
+  herdr-tab-archive/ <- Rust crate: archived-tab picker flow and view
   scripts/          <- sync-upstream.sh, overlay-diff.sh
   TOUCHPOINTS.md    <- ledger of every edit made inside upstream's tree
 ```

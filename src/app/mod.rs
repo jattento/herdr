@@ -557,6 +557,7 @@ impl App {
             collapsed_space_keys,
             // overlay(spaces): global spaces.json lives next to config.toml.
             spaces: herdr_spaces::SpacesState::load(&crate::config::config_dir()),
+            tab_archive_picker: None,
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
@@ -1835,6 +1836,10 @@ impl App {
             // overlay(spaces)
             Mode::SpacePicker => {
                 self.handle_space_picker_key(key_event);
+            }
+            // overlay(tab archive)
+            Mode::TabArchivePicker => {
+                self.handle_tab_archive_picker_key(key_event);
             }
             Mode::ConfirmRemoveWorktree => {
                 self.handle_worktree_remove_key(key_event);

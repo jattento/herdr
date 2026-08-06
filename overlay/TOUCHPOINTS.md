@@ -120,8 +120,9 @@ Two design choices worth recording, both chosen for the smaller upstream diff:
 ### `src/app/input/modal.rs`
 
 - What: `handle_space_picker_key` (translates keys, runs the crate state
-  machine, and executes the returned action) plus the key translation helper,
-  including Tab completion.
+  machine, and executes the returned action, including idempotent multi-folder
+  local opens) plus the key translation helper, including Tab completion and
+  folder marking.
 - Why here: the action side needs `App` (workspace create, worktree dialog),
   which the crate must not depend on.
 - Retire when: same as `src/app/state.rs`.
@@ -159,3 +160,194 @@ Two design choices worth recording, both chosen for the smaller upstream diff:
 - Why here: the workspace list geometry and render loop are private to this
   module, and card rects must stay in sync with the reserved rows.
 - Retire when: upstream supports grouped sidebar sections.
+
+---
+
+## tab archive (`overlay/herdr-tab-archive`)
+
+Codex-thread-like per-tab archive/unarchive. Archived tabs retain panes, PTYs,
+runtime registration, and background resizing, but disappear from normal
+desktop/mobile tab navigation. The overlay crate owns the pure searchable
+picker flow and line composition.
+
+Design notes:
+
+- Raw tab indices remain the only identity crossing module boundaries.
+  `Workspace` exposes a visible projection, while tab hit-area vectors retain
+  raw length and use empty rectangles for archived slots.
+- The navigator tree/search deliberately remains unfiltered. It is the escape
+  hatch for reaching an archived tab; focusing it unarchives it.
+- The agents sidebar panel and workspace aggregate status deliberately remain
+  unfiltered so a live blocked agent cannot disappear from monitoring.
+- `herdr tab list` deliberately remains unchanged and lists every tab. This
+  fork adds no API/schema/event surface for archive state.
+- Background resizing deliberately remains unfiltered (`src/ui.rs` continues
+  to traverse every raw tab) so archived PTYs stay correctly sized.
+- Keybindings are `keys.archive_tab = "prefix+a"` and
+  `keys.archived_tabs = "prefix+shift+a"`.
+- Mobile uses the same visible projection for status, content height, render,
+  and hit-test; no separate mobile archive UI was added.
+
+### `Cargo.toml`
+
+- What: add `overlay/herdr-tab-archive` to the existing workspace members line
+  and add the path dependency to Herdr.
+- Why here: the root package must declare and link the overlay crate.
+- Retire when: upstream exposes an out-of-tree modal/action extension API.
+
+### `Cargo.lock`
+
+- What: add the generated `herdr-tab-archive` package/dependency entries.
+- Why here: Cargo locks workspace packages in the root lockfile.
+- Retire when: the root path dependency is removed.
+
+### `src/workspace/tab.rs`
+
+- What: add `Tab.archived` and initialize new/moved tabs as visible.
+- Why here: archive is live session state owned by the runtime tab model.
+- Retire when: upstream has native per-tab archive state.
+
+### `src/workspace.rs`
+
+- What: add visible-tab projection methods, archive/unarchive mutations,
+  visible-active invariant repair, and focused unit tests.
+- Why here: raw tab storage, active-tab ownership, close repair, and tab
+  reordering all live on `Workspace`.
+- Retire when: upstream provides equivalent archive semantics and projection.
+
+### `src/persist/snapshot.rs`
+
+- What: persist `TabSnapshot.archived` with `serde(default)`, capture it, and
+  test additive/defaulted serialization.
+- Why here: cold snapshots and live handoff share this structural snapshot.
+- Retire when: upstream snapshots archive state natively.
+
+### `src/persist/restore.rs`
+
+- What: restore archived flags, repair archived active/all-archived snapshots,
+  and test capture/restore behavior.
+- Why here: this is the common cold-restore and live-handoff reconstruction
+  path.
+- Retire when: upstream restore enforces the visible-tab invariant.
+
+### `src/config/model.rs`
+
+- What: add the two keybinding fields through the public, overlay, merge,
+  effective-profile, and default sites.
+- Why here: those five repetitions define Herdr's configurable key model.
+- Retire when: upstream offers registrable overlay actions/keybindings.
+
+### `src/config/keybinds.rs`
+
+- What: parse and register the archive and archived-tabs action bindings.
+- Why here: runtime key dispatch consumes the resolved `Keybinds` structure.
+- Retire when: the keybinding extension point above exists.
+
+### `src/app/state.rs`
+
+- What: add `Mode::TabArchivePicker`, picker state, and current-workspace row
+  projection for the overlay crate.
+- Why here: TUI modes and pure client presentation state are owned by
+  `AppState`.
+- Retire when: upstream supports external modal state slots.
+
+### `src/app/mod.rs`
+
+- What: initialize the picker field and route its keys in headless-server mode.
+- Why here: the long-running server owns an `AppState` literal and a separate
+  exhaustive non-terminal key dispatch.
+- Retire when: same as `src/app/state.rs`.
+
+### `src/app/input/mod.rs`
+
+- What: route picker keys in the interactive TUI's exhaustive mode match.
+- Why here: this is the interactive counterpart to headless key dispatch.
+- Retire when: same as `src/app/state.rs`.
+
+### `src/app/input/navigate.rs`
+
+- What: dispatch both archive actions, map numeric switching through visible
+  positions, and make relative tab cycling skip archived tabs.
+- Why here: prefix/navigate action parsing and tab navigation are private here.
+- Retire when: upstream owns archive actions and visible-tab navigation.
+
+### `src/app/input/modal.rs`
+
+- What: add contextual global-menu actions, archive rejection diagnostic,
+  picker open/key/action flow, and action/label synchronization tests.
+- Why here: global-menu action execution and modal key translation require
+  direct access to `AppState`/`App`.
+- Retire when: upstream has native archived-tab actions and picker.
+
+### `src/app/input/sidebar.rs`
+
+- What: add the parallel contextual global-menu labels and the archived-hole
+  drag boundary regression test.
+- Why here: menu labels are independently assembled here, and existing tab
+  drag interaction tests live in this module.
+- Retire when: upstream replaces parallel menu action/label vectors or ships
+  native tab archive.
+
+### `src/app/input/mouse.rs`
+
+- What: make tab-bar wheel cycling visibility-aware and convert visible drop
+  slots to deterministic raw insertion boundaries.
+- Why here: tab hit-testing, wheel routing, and drag targets are private mouse
+  input behavior.
+- Retire when: upstream mouse tab navigation understands hidden tabs.
+
+### `src/app/actions.rs`
+
+- What: make tab-bar scroll buttons and test-only relative tab helpers move
+  between visible raw indices.
+- Why here: tab scroll state and its view refresh live on `AppState` here.
+- Retire when: upstream tab scrolling uses a hidden-tab projection.
+
+### `src/ui.rs`
+
+- What: use visible count for single-tab-bar policy and render the archive
+  picker mode; background tab resizing is intentionally unchanged.
+- Why here: desktop layout policy and the exhaustive overlay render match are
+  owned here.
+- Retire when: upstream provides the policy and modal render extension.
+
+### `src/ui/tabs.rs`
+
+- What: filter desktop tab geometry/rendering while preserving raw hit slots,
+  normalize visible scrolling, and render raw drag boundaries.
+- Why here: all desktop tab-bar geometry and painting are private here.
+- Retire when: upstream tab chrome supports hidden/archived tabs.
+
+### `src/ui/mobile.rs`
+
+- What: use visible tab position/count consistently for status, height,
+  rendering, and raw-index hit targets.
+- Why here: the compact mobile switcher duplicates none of the desktop tab
+  geometry and owns these four calculations.
+- Retire when: upstream mobile navigation supports hidden/archived tabs.
+
+### `src/ui/tab_surface.rs`
+
+- What: update the mobile semantic-frame characterization digest for the
+  contextual archive menu entry.
+- Why here: the full mobile render contract is hashed in this existing test.
+- Retire when: the archive menu becomes upstream behavior.
+
+### `src/ui/dialogs.rs`
+
+- What: render the archived-tabs picker through the existing modal shell and
+  map overlay tones onto Herdr palette styles.
+- Why here: ratatui, modal shell helpers, and palette access are private here.
+- Retire when: upstream supports externally rendered modal bodies.
+
+### `src/ui/keybind_help.rs`
+
+- What: list both archive keybindings in workspace/tab help.
+- Why here: built-in keybinding help rows are assembled here.
+- Retire when: help is generated from registered actions.
+
+### `src/main.rs`
+
+- What: include both archive keybindings in the generated sample config.
+- Why here: the sample config is a compiled string in the main binary.
+- Retire when: sample config is generated from the config model.

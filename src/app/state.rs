@@ -839,6 +839,8 @@ pub enum Mode {
     // overlay(spaces): folder-space picker shown instead of the plain
     // new-workspace dialog when spaces.json has entries.
     SpacePicker,
+    // overlay(tab archive): searchable archived tabs for the active workspace.
+    TabArchivePicker,
 }
 
 impl Mode {
@@ -1459,6 +1461,8 @@ pub struct AppState {
     pub collapsed_space_keys: std::collections::HashSet<String>,
     // overlay(spaces): loaded spaces.json plus the open picker, if any.
     pub spaces: herdr_spaces::SpacesState,
+    // overlay(tab archive): picker state; rows are derived from the active workspace.
+    pub tab_archive_picker: Option<herdr_tab_archive::PickerState>,
     pub request_complete_onboarding: bool,
     pub name_input: String,
     pub name_input_replace_on_type: bool,
@@ -1608,6 +1612,24 @@ pub struct AppState {
 impl AppState {
     pub(crate) fn mark_session_dirty(&mut self) {
         self.session_dirty = true;
+    }
+
+    pub(crate) fn archived_tab_rows(&self) -> Vec<herdr_tab_archive::Row> {
+        let Some(ws) = self.active.and_then(|idx| self.workspaces.get(idx)) else {
+            return Vec::new();
+        };
+        ws.tabs
+            .iter()
+            .enumerate()
+            .filter(|(_, tab)| tab.archived)
+            .map(|(raw_idx, tab)| herdr_tab_archive::Row {
+                raw_idx,
+                label: ws
+                    .tab_display_name(raw_idx)
+                    .unwrap_or_else(|| (raw_idx + 1).to_string()),
+                detail: crate::workspace::public_tab_id_for_number(&ws.id, tab.number),
+            })
+            .collect()
     }
 
     pub(crate) fn remove_alias_shadowed_by_new_pane(&mut self, pane_id: PaneId) {
@@ -1823,6 +1845,7 @@ impl AppState {
             worktree_directory: std::path::PathBuf::from("/tmp/herdr-worktrees"),
             collapsed_space_keys: std::collections::HashSet::new(),
             spaces: herdr_spaces::SpacesState::default(),
+            tab_archive_picker: None,
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,

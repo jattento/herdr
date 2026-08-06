@@ -1464,22 +1464,50 @@ impl AppState {
 
     pub fn scroll_tabs_left(&mut self) {
         self.tab_scroll_follow_active = false;
-        self.tab_scroll = self.tab_scroll.saturating_sub(1);
+        if let Some(ws) = self.active.and_then(|idx| self.workspaces.get(idx)) {
+            let current = ws
+                .visible_position(self.tab_scroll)
+                .or_else(|| {
+                    ws.visible_tabs()
+                        .position(|(idx, _)| idx >= self.tab_scroll)
+                })
+                .unwrap_or_else(|| ws.visible_tab_count().saturating_sub(1));
+            self.tab_scroll = ws
+                .tab_at_visible_position(current.saturating_sub(1))
+                .unwrap_or(0);
+        }
         self.refresh_tab_bar_view();
     }
 
     pub fn scroll_tabs_right(&mut self) {
         self.tab_scroll_follow_active = false;
-        self.tab_scroll = self.tab_scroll.saturating_add(1);
+        if let Some(ws) = self.active.and_then(|idx| self.workspaces.get(idx)) {
+            let current = ws
+                .visible_position(self.tab_scroll)
+                .or_else(|| {
+                    ws.visible_tabs()
+                        .position(|(idx, _)| idx >= self.tab_scroll)
+                })
+                .unwrap_or_else(|| ws.visible_tab_count().saturating_sub(1));
+            self.tab_scroll = ws
+                .tab_at_visible_position(
+                    current
+                        .saturating_add(1)
+                        .min(ws.visible_tab_count().saturating_sub(1)),
+                )
+                .unwrap_or(0);
+        }
         self.refresh_tab_bar_view();
     }
 
     #[cfg(test)]
     pub fn next_tab(&mut self) {
         if let Some(ws) = self.active.and_then(|i| self.workspaces.get(i)) {
-            if !ws.tabs.is_empty() {
-                let next = (ws.active_tab + 1) % ws.tabs.len();
-                self.switch_tab(next);
+            if let Some(current) = ws.visible_position(ws.active_tab) {
+                let next = (current + 1) % ws.visible_tab_count();
+                if let Some(raw_idx) = ws.tab_at_visible_position(next) {
+                    self.switch_tab(raw_idx);
+                }
             }
         }
     }
@@ -1487,13 +1515,15 @@ impl AppState {
     #[cfg(test)]
     pub fn previous_tab(&mut self) {
         if let Some(ws) = self.active.and_then(|i| self.workspaces.get(i)) {
-            if !ws.tabs.is_empty() {
-                let prev = if ws.active_tab == 0 {
-                    ws.tabs.len() - 1
+            if let Some(current) = ws.visible_position(ws.active_tab) {
+                let prev = if current == 0 {
+                    ws.visible_tab_count() - 1
                 } else {
-                    ws.active_tab - 1
+                    current - 1
                 };
-                self.switch_tab(prev);
+                if let Some(raw_idx) = ws.tab_at_visible_position(prev) {
+                    self.switch_tab(raw_idx);
+                }
             }
         }
     }

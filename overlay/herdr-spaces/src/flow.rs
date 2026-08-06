@@ -4,6 +4,7 @@
 //! herdr side turns that action into workspace/worktree creation. Nothing here
 //! knows about ratatui, crossterm, or herdr state.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::discovery::{self, DirectorySuggestion, ProjectScan};
@@ -61,6 +62,7 @@ pub enum RowKind {
     NewSpace,
     Folder(usize),
     AddFolder,
+    OpenAll,
     Local,
     Worktree,
     NoEmoji,
@@ -75,6 +77,7 @@ pub struct Row {
     pub label: String,
     pub detail: String,
     pub selectable: bool,
+    pub marked: bool,
 }
 
 impl Row {
@@ -84,6 +87,7 @@ impl Row {
             label: label.into(),
             detail: detail.into(),
             selectable: true,
+            marked: false,
         }
     }
 }
@@ -109,6 +113,8 @@ pub enum Action {
     PlainWorkspace,
     /// Create a workspace with this cwd.
     CreateLocal(PathBuf),
+    /// Create one local workspace per folder.
+    OpenManyLocal(Vec<PathBuf>),
     /// Open herdr's new-linked-worktree dialog seeded with this folder.
     CreateWorktree(PathBuf),
 }
@@ -184,6 +190,7 @@ pub struct PickerState {
     error: Option<String>,
     space: Option<usize>,
     folder: Option<PathBuf>,
+    marked_folders: BTreeSet<usize>,
     draft_name: String,
     draft_emoji: Option<String>,
     project_scan: Option<ProjectScan>,
@@ -206,6 +213,7 @@ impl PickerState {
             error: None,
             space: None,
             folder: None,
+            marked_folders: BTreeSet::new(),
             draft_name: String::new(),
             draft_emoji: None,
             project_scan: None,
@@ -257,6 +265,8 @@ impl PickerState {
             "up/down ^n/^p move  tab complete  enter select  esc back"
         } else if self.step == Step::NewSpaceName {
             "enter continue  esc back"
+        } else if self.step == Step::Folders {
+            "up/down ^n/^p move  space mark  enter open  esc back"
         } else {
             "up/down ^n/^p move  enter select  esc back"
         }
@@ -334,6 +344,10 @@ impl PickerState {
                 }
                 Action::None
             }
+            Key::Char(' ') => {
+                self.toggle_mark_or_type_space(spaces, env);
+                Action::None
+            }
             Key::Char(c) => {
                 self.error = None;
                 if self.step.is_text_input() {
@@ -401,16 +415,30 @@ impl PickerState {
                     .iter()
                     .enumerate()
                     .map(|(idx, folder)| {
-                        Row::selectable(
+                        let mut row = Row::selectable(
                             RowKind::Folder(idx),
                             folder_name(folder),
                             discovery::display_path(folder),
-                        )
+                        );
+                        row.marked = self.marked_folders.contains(&idx);
+                        row
                     })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
         rows.push(Row::selectable(RowKind::AddFolder, "add folder...", ""));
+        if self
+            .space
+            .and_then(|idx| spaces.get(idx))
+            .is_some_and(|space| space.folders.len() > 1)
+        {
+            let count = rows.len() - 1;
+            rows.push(Row::selectable(
+                RowKind::OpenAll,
+                format!("open all folders ({count})"),
+                "",
+            ));
+        }
         filter_rows(rows, &self.query)
     }
 
@@ -474,6 +502,7 @@ impl PickerState {
                     "project".to_string()
                 },
                 selectable: !choice.already_added,
+                marked: false,
             })
             .collect::<Vec<_>>();
         if self.is_manual_folder_mode() {
@@ -490,6 +519,7 @@ impl PickerState {
             Step::Spaces => return Action::Close,
             Step::Folders => {
                 self.space = None;
+                self.marked_folders.clear();
                 self.enter_list_step(Step::Spaces, spaces);
             }
             Step::Target => {
@@ -541,6 +571,7 @@ impl PickerState {
         match row.kind {
             RowKind::Space(idx) => {
                 self.space = Some(idx);
+                self.marked_folders.clear();
                 // Always show the folder list, even for a single folder:
                 // it is the only place "add folder..." is reachable.
                 self.enter_list_step(Step::Folders, spaces);
@@ -556,6 +587,10 @@ impl PickerState {
                 Action::None
             }
             RowKind::Folder(idx) => {
+                if self.marked_folders.len() >= 2 {
+                    return self.open_marked_folders(spaces);
+                }
+                self.marked_folders.clear();
                 self.folder = self
                     .space
                     .and_then(|space| spaces.get(space))
@@ -565,9 +600,15 @@ impl PickerState {
                 Action::None
             }
             RowKind::AddFolder => {
+                self.marked_folders.clear();
                 self.enter_folder_step(Step::AddFolder, spaces, env);
                 Action::None
             }
+            RowKind::OpenAll => self
+                .space
+                .and_then(|space| spaces.get(space))
+                .map(|space| Action::OpenManyLocal(space.folders.clone()))
+                .unwrap_or(Action::None),
             RowKind::Local => self
                 .folder
                 .clone()
@@ -607,6 +648,38 @@ impl PickerState {
                 self.confirm_folder(choice.path, spaces, env)
             }
         }
+    }
+
+    fn toggle_mark_or_type_space(&mut self, spaces: &[Space], env: &dyn Env) {
+        self.error = None;
+        if self.step == Step::Folders && self.query.is_empty() {
+            if let Some(Row {
+                kind: RowKind::Folder(idx),
+                ..
+            }) = self.selected_row(spaces)
+            {
+                if !self.marked_folders.insert(idx) {
+                    self.marked_folders.remove(&idx);
+                }
+            }
+        } else if self.step.is_text_input() {
+            self.input.push(' ');
+        } else {
+            self.query.push(' ');
+            self.after_query_changed(spaces, env);
+        }
+    }
+
+    fn open_marked_folders(&self, spaces: &[Space]) -> Action {
+        let Some(space) = self.space.and_then(|idx| spaces.get(idx)) else {
+            return Action::None;
+        };
+        Action::OpenManyLocal(
+            self.marked_folders
+                .iter()
+                .filter_map(|idx| space.folders.get(*idx).cloned())
+                .collect(),
+        )
     }
 
     fn confirm_name(&mut self, spaces: &[Space]) -> Action {
@@ -1016,7 +1089,7 @@ mod tests {
         let mut picker = PickerState::new();
         picker.on_key(Key::Enter, &mut spaces, &env);
         assert_eq!(picker.step(), Step::Folders);
-        assert_eq!(picker.rows(&spaces).len(), 3);
+        assert_eq!(picker.rows(&spaces).len(), 4);
 
         picker.on_key(Key::Esc, &mut spaces, &env);
         picker.on_key(Key::Down, &mut spaces, &env);
@@ -1025,6 +1098,100 @@ mod tests {
         picker.on_key(Key::Enter, &mut spaces, &env);
         assert_eq!(picker.step(), Step::Target);
         assert_eq!(picker.folder(), Some(Path::new("/side")));
+    }
+
+    #[test]
+    fn folder_marks_toggle_only_in_the_open_folder_step() {
+        let mut spaces = spaces();
+        let env = FakeEnv::new(&[]);
+        let mut picker = PickerState::new();
+        picker.on_key(Key::Enter, &mut spaces, &env);
+
+        picker.on_key(Key::Char(' '), &mut spaces, &env);
+        assert!(picker.rows(&spaces)[0].marked);
+        picker.on_key(Key::Char(' '), &mut spaces, &env);
+        assert!(!picker.rows(&spaces)[0].marked);
+
+        type_text(&mut picker, &mut spaces, &env, "a");
+        picker.on_key(Key::Char(' '), &mut spaces, &env);
+        assert_eq!(picker.query(), "a ");
+    }
+
+    #[test]
+    fn open_all_entry_is_only_shown_for_multi_folder_spaces() {
+        let mut spaces = spaces();
+        let env = FakeEnv::new(&[]);
+        let mut picker = PickerState::new();
+        picker.on_key(Key::Enter, &mut spaces, &env);
+        let rows = picker.rows(&spaces);
+        assert_eq!(rows.last().map(|row| row.kind), Some(RowKind::OpenAll));
+        assert_eq!(
+            rows.last().map(|row| row.label.as_str()),
+            Some("open all folders (2)")
+        );
+
+        picker.on_key(Key::Esc, &mut spaces, &env);
+        picker.on_key(Key::Down, &mut spaces, &env);
+        picker.on_key(Key::Enter, &mut spaces, &env);
+        assert!(picker
+            .rows(&spaces)
+            .iter()
+            .all(|row| row.kind != RowKind::OpenAll));
+    }
+
+    #[test]
+    fn enter_with_two_marks_opens_the_marked_folders_locally() {
+        let mut spaces = spaces();
+        let env = FakeEnv::new(&[]);
+        let mut picker = PickerState::new();
+        picker.on_key(Key::Enter, &mut spaces, &env);
+        picker.on_key(Key::Char(' '), &mut spaces, &env);
+        picker.on_key(Key::Down, &mut spaces, &env);
+        picker.on_key(Key::Char(' '), &mut spaces, &env);
+
+        assert_eq!(
+            picker.on_key(Key::Enter, &mut spaces, &env),
+            Action::OpenManyLocal(vec![PathBuf::from("/work/a"), PathBuf::from("/work/b")])
+        );
+        assert_eq!(picker.step(), Step::Folders);
+    }
+
+    #[test]
+    fn one_mark_keeps_the_single_folder_target_flow() {
+        let mut spaces = spaces();
+        let env = FakeEnv::new(&[]);
+        let mut picker = PickerState::new();
+        picker.on_key(Key::Enter, &mut spaces, &env);
+        picker.on_key(Key::Char(' '), &mut spaces, &env);
+
+        assert_eq!(picker.on_key(Key::Enter, &mut spaces, &env), Action::None);
+        assert_eq!(picker.step(), Step::Target);
+        assert_eq!(picker.folder(), Some(Path::new("/work/a")));
+    }
+
+    #[test]
+    fn open_all_enters_with_every_folder_and_add_folder_flow_is_unaffected() {
+        let mut spaces = spaces();
+        let env = FakeEnv::new(&["/work/c"]);
+        let mut picker = PickerState::new();
+        picker.on_key(Key::Enter, &mut spaces, &env);
+        picker.select(3);
+        assert_eq!(
+            picker.on_key(Key::Enter, &mut spaces, &env),
+            Action::OpenManyLocal(vec![PathBuf::from("/work/a"), PathBuf::from("/work/b")])
+        );
+
+        let mut picker = PickerState::new();
+        picker.on_key(Key::Enter, &mut spaces, &env);
+        type_text(&mut picker, &mut spaces, &env, "add folder");
+        picker.on_key(Key::Enter, &mut spaces, &env);
+        assert_eq!(picker.step(), Step::AddFolder);
+        assert!(picker
+            .rows(&spaces)
+            .iter()
+            .all(|row| row.kind != RowKind::OpenAll));
+        picker.on_key(Key::Char(' '), &mut spaces, &env);
+        assert_eq!(picker.query(), " ");
     }
 
     #[test]

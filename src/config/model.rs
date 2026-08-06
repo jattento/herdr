@@ -389,6 +389,10 @@ pub struct KeysConfig {
     pub new_tab: BindingConfig,
     /// Rename the active tab. Default: "prefix+shift+t".
     pub rename_tab: BindingConfig,
+    /// Archive the active tab. Default: "prefix+a".
+    pub archive_tab: BindingConfig,
+    /// Open the archived-tabs picker. Default: "prefix+shift+a".
+    pub archived_tabs: BindingConfig,
     /// Select the previous tab. Default: "prefix+p".
     pub previous_tab: BindingConfig,
     /// Select the next tab. Default: "prefix+n".
@@ -509,6 +513,10 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     rename_tab: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    archive_tab: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    archived_tabs: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     previous_tab: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     next_tab: Option<BindingConfig>,
@@ -609,6 +617,8 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(remote_image_paste);
         apply_field!(new_tab);
         apply_field!(rename_tab);
+        apply_field!(archive_tab);
+        apply_field!(archived_tabs);
         apply_field!(previous_tab);
         apply_field!(next_tab);
         apply_field!(switch_tab);
@@ -707,6 +717,8 @@ impl KeysConfig {
         copy_user_field!(remote_image_paste);
         copy_effective_action_field!(new_tab, keybinds.new_tab);
         copy_effective_action_field!(rename_tab, keybinds.rename_tab);
+        copy_effective_action_field!(archive_tab, keybinds.archive_tab);
+        copy_effective_action_field!(archived_tabs, keybinds.archived_tabs);
         copy_effective_action_field!(previous_tab, keybinds.previous_tab);
         copy_effective_action_field!(next_tab, keybinds.next_tab);
         copy_effective_indexed_field!(switch_tab, keybinds.switch_tab);
@@ -993,6 +1005,8 @@ impl Default for KeysConfig {
             remote_image_paste: "ctrl+v".into(),
             new_tab: BindingConfig::one("prefix+c"),
             rename_tab: BindingConfig::one("prefix+shift+t"),
+            archive_tab: BindingConfig::one("prefix+a"),
+            archived_tabs: BindingConfig::one("prefix+shift+a"),
             previous_tab: BindingConfig::one("prefix+p"),
             next_tab: BindingConfig::one("prefix+n"),
             switch_tab: BindingConfig::one("prefix+1..9"),

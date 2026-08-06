@@ -481,6 +481,26 @@ impl Workspace {
         self.tabs.get_mut(self.active_tab)
     }
 
+    pub fn visible_tabs(&self) -> impl Iterator<Item = (usize, &Tab)> {
+        self.tabs
+            .iter()
+            .enumerate()
+            .filter(|(_, tab)| !tab.archived)
+    }
+
+    pub fn visible_position(&self, raw_idx: usize) -> Option<usize> {
+        self.visible_tabs()
+            .position(|(tab_idx, _)| tab_idx == raw_idx)
+    }
+
+    pub fn tab_at_visible_position(&self, position: usize) -> Option<usize> {
+        self.visible_tabs().nth(position).map(|(tab_idx, _)| tab_idx)
+    }
+
+    pub fn visible_tab_count(&self) -> usize {
+        self.visible_tabs().count()
+    }
+
     pub fn active_tab_display_name(&self) -> Option<String> {
         self.tab_display_name(self.active_tab)
     }
@@ -496,6 +516,7 @@ impl Workspace {
 
     pub fn switch_tab(&mut self, idx: usize) {
         if idx < self.tabs.len() {
+            self.tabs[idx].archived = false;
             self.active_tab = idx;
             if let Some(tab) = self.tabs.get_mut(idx) {
                 for pane in tab.panes.values_mut() {
@@ -631,6 +652,48 @@ impl Workspace {
         } else if idx <= self.active_tab && self.active_tab > 0 {
             self.active_tab -= 1;
         }
+        if self.visible_tab_count() == 0 {
+            self.tabs[self.active_tab].archived = false;
+        } else if self.tabs[self.active_tab].archived {
+            let previous_active = self.active_tab;
+            let next_active = self
+                .visible_tabs()
+                .map(|(tab_idx, _)| tab_idx)
+                .find(|tab_idx| *tab_idx >= previous_active)
+                .or_else(|| self.visible_tabs().next().map(|(tab_idx, _)| tab_idx))
+                .expect("workspace must contain a visible tab");
+            self.active_tab = next_active;
+        }
+        true
+    }
+
+    pub fn archive_tab(&mut self, raw_idx: usize) -> bool {
+        if raw_idx >= self.tabs.len()
+            || self.tabs[raw_idx].archived
+            || self.visible_tab_count() <= 1
+        {
+            return false;
+        }
+
+        self.tabs[raw_idx].archived = true;
+        if self.active_tab == raw_idx {
+            self.active_tab = ((raw_idx + 1)..self.tabs.len())
+                .chain(0..raw_idx)
+                .find(|idx| !self.tabs[*idx].archived)
+                .expect("archiving requires another visible tab");
+        }
+        true
+    }
+
+    pub fn unarchive_tab(&mut self, raw_idx: usize) -> bool {
+        let Some(tab) = self.tabs.get_mut(raw_idx) else {
+            return false;
+        };
+        if !tab.archived {
+            return false;
+        }
+        tab.archived = false;
+        self.switch_tab(raw_idx);
         true
     }
 
@@ -1264,6 +1327,7 @@ impl Workspace {
         let tab = Tab {
             custom_name: None,
             number: 1,
+            archived: false,
             root_pane: root_id,
             layout,
             panes,
@@ -1320,6 +1384,7 @@ impl Workspace {
         let tab = Tab {
             custom_name: name.map(str::to_string),
             number: self.next_public_tab_number,
+            archived: false,
             root_pane: root_id,
             layout,
             panes,
@@ -1381,6 +1446,17 @@ impl Workspace {
             self.id,
             self.active_tab,
             self.tabs.len()
+        );
+        assert!(
+            self.visible_tab_count() > 0,
+            "workspace {} must contain at least one visible tab",
+            self.id
+        );
+        assert!(
+            !self.tabs[self.active_tab].archived,
+            "workspace {} active tab {} must be visible",
+            self.id,
+            self.active_tab
         );
 
         let mut tab_numbers = std::collections::HashSet::new();
@@ -1598,6 +1674,47 @@ mod tests {
         let fourth_root = ws.tabs[fourth_tab].root_pane;
         assert_eq!(ws.public_tab_number_for_pane(fourth_root), Some(4));
         ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn archive_tab_rejects_last_visible_tab() {
+        let mut ws = Workspace::test_new("test");
+
+        assert!(!ws.archive_tab(0));
+        assert_eq!(ws.visible_tab_count(), 1);
+        assert_eq!(ws.active_tab, 0);
+        assert!(!ws.tabs[0].archived);
+    }
+
+    #[test]
+    fn archive_active_tab_moves_to_next_visible_tab() {
+        let mut ws = Workspace::test_new("test");
+        let archived_hole = ws.test_add_tab(Some("archived"));
+        let next = ws.test_add_tab(Some("next"));
+        assert!(ws.archive_tab(archived_hole));
+        ws.switch_tab(0);
+
+        assert!(ws.archive_tab(0));
+        assert_eq!(ws.active_tab, next);
+        assert_eq!(
+            ws.visible_tabs().map(|(idx, _)| idx).collect::<Vec<_>>(),
+            vec![next]
+        );
+        ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn visible_tab_projection_preserves_raw_indices_across_holes() {
+        let mut ws = Workspace::test_new("test");
+        let archived = ws.test_add_tab(Some("archived"));
+        let last = ws.test_add_tab(Some("last"));
+        assert!(ws.archive_tab(archived));
+
+        assert_eq!(ws.visible_tab_count(), 2);
+        assert_eq!(ws.visible_position(0), Some(0));
+        assert_eq!(ws.visible_position(archived), None);
+        assert_eq!(ws.visible_position(last), Some(1));
+        assert_eq!(ws.tab_at_visible_position(1), Some(last));
     }
 
     #[test]

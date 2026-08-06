@@ -74,6 +74,8 @@ pub(super) fn modal_action_from_buttons<A: Copy>(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GlobalMenuAction {
+    ArchiveTab,
+    ArchivedTabs,
     Detach,
     WhatsNew,
     Keybinds,
@@ -87,11 +89,41 @@ pub(super) fn global_menu_actions(state: &AppState) -> Vec<GlobalMenuAction> {
         GlobalMenuAction::Keybinds,
         GlobalMenuAction::ReloadConfig,
     ];
+    if state
+        .active
+        .and_then(|idx| state.workspaces.get(idx))
+        .is_some_and(|ws| ws.visible_tab_count() > 1)
+    {
+        actions.push(GlobalMenuAction::ArchiveTab);
+    }
+    if state
+        .active
+        .and_then(|idx| state.workspaces.get(idx))
+        .is_some_and(|ws| ws.visible_tab_count() < ws.tabs.len())
+    {
+        actions.push(GlobalMenuAction::ArchivedTabs);
+    }
     if state.update_available.is_some() || state.latest_release_notes_available {
         actions.push(GlobalMenuAction::WhatsNew);
     }
     actions.push(GlobalMenuAction::Detach);
     actions
+}
+
+#[cfg(test)]
+impl GlobalMenuAction {
+    fn label(self, state: &AppState) -> &'static str {
+        match self {
+            Self::ArchiveTab => "archive tab",
+            Self::ArchivedTabs => "archived tabs...",
+            Self::Detach => "detach",
+            Self::WhatsNew if state.update_available.is_some() => "update ready",
+            Self::WhatsNew => "what's new",
+            Self::Keybinds => "keybinds",
+            Self::ReloadConfig => "reload config",
+            Self::Settings => "settings",
+        }
+    }
 }
 
 pub(super) fn open_global_menu(state: &mut AppState) {
@@ -130,6 +162,11 @@ pub(super) fn request_detach(state: &mut AppState) {
 
 pub(super) fn apply_global_menu_action(state: &mut AppState, action: GlobalMenuAction) {
     match action {
+        GlobalMenuAction::ArchiveTab => {
+            archive_active_tab(state);
+            leave_modal(state);
+        }
+        GlobalMenuAction::ArchivedTabs => open_archived_tabs(state),
         GlobalMenuAction::Detach => {
             leave_modal(state);
             request_detach(state);
@@ -456,6 +493,38 @@ pub(super) fn leave_modal(state: &mut AppState) {
     }
 }
 
+pub(super) fn archive_active_tab(state: &mut AppState) -> bool {
+    let Some(ws_idx) = state.active else {
+        return false;
+    };
+    let Some(ws) = state.workspaces.get_mut(ws_idx) else {
+        return false;
+    };
+    if ws.visible_tab_count() <= 1 {
+        state.config_diagnostic = Some("cannot archive the last visible tab".into());
+        return false;
+    }
+    let active_tab = ws.active_tab_index();
+    if !ws.archive_tab(active_tab) {
+        return false;
+    }
+    state.mark_session_dirty();
+    state.tab_scroll_follow_active = true;
+    state.refresh_tab_bar_view();
+    true
+}
+
+pub(super) fn open_archived_tabs(state: &mut AppState) {
+    let has_archived = state
+        .active
+        .and_then(|idx| state.workspaces.get(idx))
+        .is_some_and(|ws| ws.visible_tab_count() < ws.tabs.len());
+    if has_archived {
+        state.tab_archive_picker = Some(herdr_tab_archive::PickerState::new());
+        state.mode = Mode::TabArchivePicker;
+    }
+}
+
 /// overlay(spaces): translate a key press into a picker key. Arrows and
 /// ctrl-n/ctrl-p move, enter confirms, esc backs up, anything else printable
 /// filters or types.
@@ -472,6 +541,23 @@ fn space_picker_key(key: &KeyEvent) -> Option<herdr_spaces::Key> {
         KeyCode::Backspace => Some(herdr_spaces::Key::Backspace),
         KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
             Some(herdr_spaces::Key::Char(c))
+        }
+        _ => None,
+    }
+}
+
+fn tab_archive_picker_key(key: &KeyEvent) -> Option<herdr_tab_archive::Key> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Up => Some(herdr_tab_archive::Key::Up),
+        KeyCode::Down => Some(herdr_tab_archive::Key::Down),
+        KeyCode::Char('p') if ctrl => Some(herdr_tab_archive::Key::Up),
+        KeyCode::Char('n') if ctrl => Some(herdr_tab_archive::Key::Down),
+        KeyCode::Enter => Some(herdr_tab_archive::Key::Enter),
+        KeyCode::Esc => Some(herdr_tab_archive::Key::Esc),
+        KeyCode::Backspace => Some(herdr_tab_archive::Key::Backspace),
+        KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
+            Some(herdr_tab_archive::Key::Char(c))
         }
         _ => None,
     }
@@ -1054,10 +1140,74 @@ impl App {
                 );
                 leave_modal(&mut self.state);
             }
+            herdr_spaces::Action::OpenManyLocal(folders) => {
+                self.state.spaces.picker = None;
+                let mut focus = true;
+                for cwd in folders {
+                    if self
+                        .state
+                        .workspaces
+                        .iter()
+                        .any(|workspace| workspace.identity_cwd == cwd)
+                    {
+                        continue;
+                    }
+                    let workspace_count = self.state.workspaces.len();
+                    self.runtime_workspace_create(
+                        "tui.workspace.create_space",
+                        crate::api::schema::WorkspaceCreateParams {
+                            cwd: Some(cwd.display().to_string()),
+                            focus,
+                            label: None,
+                            env: Default::default(),
+                        },
+                    );
+                    if self.state.workspaces.len() > workspace_count {
+                        focus = false;
+                    }
+                }
+                leave_modal(&mut self.state);
+            }
             herdr_spaces::Action::CreateWorktree(cwd) => {
                 self.state.spaces.picker = None;
                 leave_modal(&mut self.state);
                 self.open_new_linked_worktree_dialog_for_cwd(cwd);
+            }
+        }
+    }
+
+    /// overlay(tab archive): drive the archived-tab picker against current
+    /// workspace rows, then apply the raw-index action in Herdr state.
+    pub(crate) fn handle_tab_archive_picker_key(&mut self, key: KeyEvent) {
+        let Some(translated) = tab_archive_picker_key(&key) else {
+            return;
+        };
+        let rows = self.state.archived_tab_rows();
+        let action = self
+            .state
+            .tab_archive_picker
+            .as_mut()
+            .map(|picker| picker.on_key(translated, &rows))
+            .unwrap_or(herdr_tab_archive::Action::Close);
+        match action {
+            herdr_tab_archive::Action::None => {}
+            herdr_tab_archive::Action::Close => {
+                self.state.tab_archive_picker = None;
+                leave_modal(&mut self.state);
+            }
+            herdr_tab_archive::Action::Unarchive(raw_idx) => {
+                let changed = self
+                    .state
+                    .active
+                    .and_then(|ws_idx| self.state.workspaces.get_mut(ws_idx))
+                    .is_some_and(|ws| ws.unarchive_tab(raw_idx));
+                self.state.tab_archive_picker = None;
+                if changed {
+                    self.state.mark_session_dirty();
+                    self.state.tab_scroll_follow_active = true;
+                    self.state.refresh_tab_bar_view();
+                }
+                leave_modal(&mut self.state);
             }
         }
     }
@@ -1469,6 +1619,67 @@ mod tests {
                 .as_nanos()
         );
         std::env::temp_dir().join(unique).join("config.toml")
+    }
+
+    #[test]
+    fn global_menu_actions_and_labels_stay_in_sync() {
+        for visible_tabs in [1, 2] {
+            for archived_tabs in [0, 1] {
+                for release_state in 0..3 {
+                    let mut state = state_with_workspaces(&["test"]);
+                    for _ in 1..(visible_tabs + archived_tabs) {
+                        state.workspaces[0].test_add_tab(None);
+                    }
+                    if archived_tabs == 1 {
+                        let raw_idx = state.workspaces[0].tabs.len() - 1;
+                        assert!(state.workspaces[0].archive_tab(raw_idx));
+                    }
+                    match release_state {
+                        1 => state.update_available = Some("next".into()),
+                        2 => state.latest_release_notes_available = true,
+                        _ => {}
+                    }
+
+                    let action_labels = global_menu_actions(&state)
+                        .into_iter()
+                        .map(|action| action.label(&state))
+                        .collect::<Vec<_>>();
+                    assert_eq!(action_labels, state.global_menu_labels());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn archiving_last_visible_tab_sets_diagnostic() {
+        let mut state = state_with_workspaces(&["test"]);
+
+        assert!(!archive_active_tab(&mut state));
+        assert_eq!(
+            state.config_diagnostic.as_deref(),
+            Some("cannot archive the last visible tab")
+        );
+        assert!(!state.workspaces[0].tabs[0].archived);
+    }
+
+    #[test]
+    fn archived_picker_unarchives_focuses_and_closes() {
+        let mut app = app_with_test_workspaces(&["test"]);
+        let archived = app.state.workspaces[0].test_add_tab(Some("logs"));
+        assert!(app.state.workspaces[0].archive_tab(archived));
+
+        open_archived_tabs(&mut app.state);
+        assert_eq!(app.state.mode, Mode::TabArchivePicker);
+
+        app.handle_tab_archive_picker_key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::empty(),
+        ));
+
+        assert!(!app.state.workspaces[0].tabs[archived].archived);
+        assert_eq!(app.state.workspaces[0].active_tab, archived);
+        assert_eq!(app.state.mode, Mode::Terminal);
+        assert!(app.state.tab_archive_picker.is_none());
     }
 
     fn app_with_test_workspaces(names: &[&str]) -> App {
