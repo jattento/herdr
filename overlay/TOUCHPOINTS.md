@@ -70,15 +70,45 @@ Two design choices worth recording, both chosen for the smaller upstream diff:
 - What: load `spaces.json` into the new field at startup, and route
   `Mode::SpacePicker` keys in the headless server key handler.
 - Why here: both the `AppState` literal and the headless key match are here and
-  are exhaustive over `Mode`.
+  are exhaustive over `Mode`. Also holds the `App::next_spaces_reload_poll`
+  deadline field and its `SPACES_RELOAD_POLL_INTERVAL` constant, alongside
+  their siblings `next_resize_poll`/`RESIZE_POLL_INTERVAL`; the poll itself
+  lives in `runtime.rs`.
 - Retire when: same as `src/app/state.rs`.
 
 ### `src/app/creation.rs`
 
 - What: `begin_tui_workspace_create` opens the space picker when spaces.json is
-  non-empty; re-entry from the picker itself falls through to upstream.
+  non-empty; re-entry from the picker itself falls through to upstream. Calls
+  `spaces.maybe_reload()` first, so a hand-edit is picked up before deciding
+  empty-vs-picker.
 - Why here: this is the single funnel for prefix+m and the sidebar new button.
 - Retire when: upstream offers a hook for "user asked for a new workspace".
+
+### `src/app/runtime.rs`
+
+- What: `App::reload_spaces`, a coarse (2s) poll that calls
+  `herdr_spaces::SpacesState::maybe_reload` and leaves `Mode::SpacePicker` if
+  the reload just closed an open picker out from under it. Called from
+  `handle_scheduled_tasks`, and `next_spaces_reload_poll` is one of the
+  deadlines `next_loop_deadline` reports so the event loop wakes up for it.
+  `handle_scheduled_tasks_headless` in `src/server/headless.rs` calls the
+  same `reload_spaces` method on its own due-check.
+- Why here: this is the app's scheduled-task loop; `herdr-spaces` owns no
+  event loop and must not depend on `App`/`Mode`.
+- Retire when: same as `src/app/state.rs`.
+
+### `src/server/headless.rs`
+
+- What: `handle_scheduled_tasks_headless` calls `App::reload_spaces` on the
+  same coarse poll as the interactive loop. This is the path that matters in
+  practice: the app runs here, in the long-running server process, not in
+  the thin per-client renderer.
+- Why here: the headless server has its own scheduled-task function (it
+  skips resize polling, which has no meaning without a local terminal) and
+  therefore its own copy of the due-check; `App::reload_spaces` stays
+  `pub(crate)` in `src/app/runtime.rs` so both loops share one code path.
+- Retire when: same as `src/app/state.rs`.
 
 ### `src/app/input/mod.rs`
 

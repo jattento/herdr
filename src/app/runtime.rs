@@ -6,8 +6,8 @@ use std::time::Duration;
 use crossterm::terminal;
 
 use super::{
-    background_update_check_enabled, App, AUTO_UPDATE_CHECK_INTERVAL, MIN_RENDER_INTERVAL,
-    RESIZE_POLL_INTERVAL, SELECTION_AUTOSCROLL_INTERVAL,
+    background_update_check_enabled, App, Mode, AUTO_UPDATE_CHECK_INTERVAL, MIN_RENDER_INTERVAL,
+    RESIZE_POLL_INTERVAL, SELECTION_AUTOSCROLL_INTERVAL, SPACES_RELOAD_POLL_INTERVAL,
 };
 fn retain_custom_command_after_wait(
     pid: u32,
@@ -287,6 +287,15 @@ impl App {
             self.next_resize_poll = now + RESIZE_POLL_INTERVAL;
         }
 
+        // overlay(spaces): spaces.json can be hand-edited while the server
+        // keeps running (clients only render frames), so poll for changes
+        // on a coarse interval instead of only loading it at startup. The
+        // headless server loop has its own copy of this due-check, since it
+        // doesn't run `handle_scheduled_tasks`; both call `reload_spaces`.
+        if now >= self.next_spaces_reload_poll {
+            changed |= self.reload_spaces(now);
+        }
+
         if self
             .config_diagnostic_deadline
             .is_some_and(|deadline| now >= deadline)
@@ -523,6 +532,29 @@ impl App {
         }
     }
 
+    /// overlay(spaces): reload `spaces.json` if the coarse poll deadline
+    /// has passed, and rearm it either way. Shared by `handle_scheduled_tasks`
+    /// (interactive/monolithic loop) and `handle_scheduled_tasks_headless`
+    /// (the real long-running server loop) so a hand-edit becomes visible
+    /// without a restart in both. Returns whether the reload changed
+    /// anything worth a render.
+    pub(crate) fn reload_spaces(&mut self, now: Instant) -> bool {
+        self.next_spaces_reload_poll = now + SPACES_RELOAD_POLL_INTERVAL;
+        if !self.state.spaces.maybe_reload() {
+            return false;
+        }
+        if self.state.mode == Mode::SpacePicker {
+            // The reload already closed the picker driving this mode;
+            // leave it too instead of stranding the user in it.
+            self.state.mode = if self.state.active.is_some() {
+                Mode::Terminal
+            } else {
+                Mode::Navigate
+            };
+        }
+        true
+    }
+
     pub(crate) fn run_auto_update_check(&mut self) {
         if !background_update_check_enabled(self.no_session, self.update_version_check_enabled) {
             self.next_auto_update_check = None;
@@ -585,6 +617,8 @@ impl App {
 
         [
             include_resize_poll.then_some(self.next_resize_poll),
+            // overlay(spaces)
+            Some(self.next_spaces_reload_poll),
             self.config_diagnostic_deadline,
             self.toast_deadline,
             self.state.next_pending_agent_notification_deadline(),

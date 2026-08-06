@@ -4334,6 +4334,14 @@ impl HeadlessServer {
         // No resize polling needed — server has no terminal.
         // Client resize messages drive size changes instead.
 
+        // overlay(spaces): spaces.json can be hand-edited while this
+        // long-running server keeps a client's socket connection alive, so
+        // poll for changes on a coarse interval instead of only loading it
+        // at startup. `reload_spaces` also rearms the deadline.
+        if now >= self.app.next_spaces_reload_poll {
+            changed |= self.app.reload_spaces(now);
+        }
+
         if self
             .app
             .config_diagnostic_deadline
@@ -6218,13 +6226,16 @@ next_tab = ""
         }));
 
         assert!(!server.has_app_client());
+        // overlay(spaces): the spaces-reload poll is unconditional, so it's
+        // the deadline here rather than `None`; the point of this test is
+        // that git refresh contributes nothing on top of it.
         assert_eq!(
             server.app.next_headless_loop_deadline_with_git_refresh(
                 Instant::now(),
                 false,
                 server.has_app_client()
             ),
-            None
+            Some(server.app.next_spaces_reload_poll)
         );
     }
 
@@ -6254,13 +6265,14 @@ next_tab = ""
         server.clients.get_mut(&7).expect("client").writer = None;
 
         assert!(!server.has_app_client());
+        // overlay(spaces): see the comment in the sibling test above.
         assert_eq!(
             server.app.next_headless_loop_deadline_with_git_refresh(
                 Instant::now(),
                 false,
                 server.has_app_client()
             ),
-            None
+            Some(server.app.next_spaces_reload_poll)
         );
     }
 

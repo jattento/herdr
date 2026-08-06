@@ -35,6 +35,9 @@ use std::time::{Duration, Instant};
 const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(16);
 pub(crate) const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(30);
 const RESIZE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+// overlay(spaces): coarse poll for hand-edits to spaces.json; see
+// `handle_scheduled_tasks` in runtime.rs.
+const SPACES_RELOAD_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
 const GIT_REPO_DISCOVERY_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const AUTO_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
@@ -122,6 +125,8 @@ pub struct App {
     pub(crate) last_pane_click: Option<PaneClickState>,
     pub(crate) pending_url_click_sources: HashSet<InputSourceId>,
     pub(crate) next_resize_poll: Instant,
+    // overlay(spaces)
+    pub(crate) next_spaces_reload_poll: Instant,
     pub(crate) next_auto_update_check: Option<Instant>,
     pub(crate) next_agent_manifest_update_check: Option<Instant>,
     pub(crate) update_version_check_enabled: bool,
@@ -744,6 +749,8 @@ impl App {
             last_pane_click: None,
             pending_url_click_sources: HashSet::new(),
             next_resize_poll: Instant::now() + RESIZE_POLL_INTERVAL,
+            // overlay(spaces)
+            next_spaces_reload_poll: Instant::now() + SPACES_RELOAD_POLL_INTERVAL,
             next_auto_update_check: version_check_enabled
                 .then_some(Instant::now() + AUTO_UPDATE_CHECK_INTERVAL),
             next_agent_manifest_update_check: manifest_check_enabled
@@ -4843,6 +4850,9 @@ mod tests {
         app.session_save_deadline = Some(now + Duration::from_secs(2));
         app.next_resize_poll = now + Duration::from_secs(5);
         app.next_auto_update_check = Some(now + Duration::from_secs(6));
+        // overlay(spaces): keep the unrelated spaces-reload poll out of the
+        // way of this session-save-focused deadline assertion.
+        app.next_spaces_reload_poll = now + Duration::from_secs(7);
 
         assert_eq!(
             app.next_loop_deadline(now, false),
@@ -4857,6 +4867,8 @@ mod tests {
         app.next_resize_poll = now + Duration::from_millis(100);
         app.session_save_deadline = Some(now + Duration::from_secs(2));
         app.next_auto_update_check = Some(now + Duration::from_secs(6));
+        // overlay(spaces)
+        app.next_spaces_reload_poll = now + Duration::from_secs(7);
 
         assert_eq!(
             app.next_headless_loop_deadline_with_git_refresh(now, false, true),
@@ -4865,7 +4877,7 @@ mod tests {
     }
 
     #[test]
-    fn headless_next_loop_deadline_returns_none_when_resize_poll_is_only_deadline() {
+    fn headless_next_loop_deadline_keeps_spaces_reload_poll_when_otherwise_idle() {
         let mut app = test_app();
         let now = Instant::now();
         app.next_resize_poll = now - Duration::from_millis(1);
@@ -4875,9 +4887,13 @@ mod tests {
         app.session_save_deadline = None;
         app.state.workspaces.clear();
 
+        // overlay(spaces): resize poll is (rightly) ignored in headless
+        // mode, but the spaces-reload poll is not optional — it's the one
+        // deadline that keeps an otherwise-idle headless server waking up,
+        // which is what makes a hand-edited spaces.json ever get noticed.
         assert_eq!(
             app.next_headless_loop_deadline_with_git_refresh(now, false, true),
-            None
+            Some(app.next_spaces_reload_poll)
         );
     }
 

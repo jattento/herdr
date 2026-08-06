@@ -100,6 +100,9 @@ impl App {
         // overlay(spaces): with a configured space list, pick a space folder
         // first. Re-entering from the picker itself falls through to the
         // upstream behavior below.
+        // overlay(spaces): pick up hand-edits to spaces.json before deciding
+        // whether there is anything to pick from.
+        self.state.spaces.maybe_reload();
         if !self.state.spaces.is_empty() && self.state.mode != Mode::SpacePicker {
             self.state.spaces.picker = Some(herdr_spaces::PickerState::new());
             self.state.mode = Mode::SpacePicker;

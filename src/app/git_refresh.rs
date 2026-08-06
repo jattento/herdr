@@ -414,9 +414,11 @@ mod tests {
         let now = Instant::now();
         app.last_git_remote_status_refresh = now - GIT_REMOTE_STATUS_REFRESH_INTERVAL;
 
+        // overlay(spaces): with git refresh excluded, the unconditional
+        // spaces-reload poll is the only other deadline left, not `None`.
         assert_eq!(
             app.next_headless_loop_deadline_with_git_refresh(now, false, false),
-            None
+            Some(app.next_spaces_reload_poll)
         );
         assert_eq!(
             app.next_headless_loop_deadline_with_git_refresh(now, false, true),
