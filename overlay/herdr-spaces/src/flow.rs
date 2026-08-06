@@ -104,11 +104,22 @@ pub trait Env {
 /// Real environment, writing to `<config dir>/spaces.json`.
 pub struct FsEnv {
     file: PathBuf,
+    saved: std::cell::Cell<bool>,
 }
 
 impl FsEnv {
     pub fn new(file: PathBuf) -> Self {
-        Self { file }
+        Self {
+            file,
+            saved: std::cell::Cell::new(false),
+        }
+    }
+
+    /// Whether this env performed a successful save. Used by the caller to
+    /// refresh its file fingerprint so the picker's own write is not later
+    /// mistaken for an external edit by `maybe_reload`.
+    pub fn saved(&self) -> bool {
+        self.saved.get()
     }
 }
 
@@ -120,6 +131,7 @@ impl Env for FsEnv {
     fn save(&self, spaces: &[Space]) -> Result<(), String> {
         store::save(&self.file, spaces)
             .map_err(|err| format!("could not save {}: {err}", store::FILE_NAME))
+            .inspect(|_| self.saved.set(true))
     }
 }
 
@@ -350,16 +362,11 @@ impl PickerState {
         match row.kind {
             RowKind::Space(idx) => {
                 self.space = Some(idx);
-                let folders = spaces
-                    .get(idx)
-                    .map(|space| space.folders.len())
-                    .unwrap_or(0);
-                if folders == 1 {
-                    self.folder = spaces[idx].folders.first().cloned();
-                    self.enter_list_step(Step::Target);
-                } else {
-                    self.enter_list_step(Step::Folders);
-                }
+                // Always show the folder list, even for a single folder:
+                // it is the only place "add folder..." is reachable, and a
+                // silent skip made one-folder spaces impossible to grow from
+                // the picker.
+                self.enter_list_step(Step::Folders);
                 Action::None
             }
             RowKind::PlainWorkspace => Action::PlainWorkspace,
@@ -647,11 +654,15 @@ mod tests {
     }
 
     #[test]
-    fn single_folder_space_skips_the_folder_step() {
+    fn single_folder_space_still_shows_the_folder_step() {
         let mut spaces = spaces();
         let env = FakeEnv::new(&[]);
         let mut picker = PickerState::new();
         picker.on_key(Key::Down, &mut spaces, &env);
+        picker.on_key(Key::Enter, &mut spaces, &env);
+        // The folder list must always render: "add folder..." lives there,
+        // so skipping it would strand one-folder spaces.
+        assert_eq!(picker.step(), Step::Folders);
         picker.on_key(Key::Enter, &mut spaces, &env);
         assert_eq!(picker.step(), Step::Target);
         assert_eq!(picker.folder(), Some(Path::new("/side")));
@@ -664,6 +675,7 @@ mod tests {
         let mut picker = PickerState::new();
         picker.on_key(Key::Down, &mut spaces, &env);
         picker.on_key(Key::Enter, &mut spaces, &env);
+        picker.on_key(Key::Enter, &mut spaces, &env); // through the folder list
         assert_eq!(
             picker.on_key(Key::Enter, &mut spaces, &env),
             Action::CreateLocal(PathBuf::from("/side"))

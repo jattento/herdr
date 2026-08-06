@@ -103,7 +103,14 @@ impl SpacesState {
         let Some(picker) = self.picker.as_mut() else {
             return Action::None;
         };
-        picker.on_key(key, &mut self.list, &env)
+        let action = picker.on_key(key, &mut self.list, &env);
+        if env.saved() {
+            // The picker wrote spaces.json itself; adopt the new fingerprint
+            // so the periodic maybe_reload poll does not treat our own write
+            // as an external edit and reset the open picker.
+            self.fingerprint = Fingerprint::stat(&self.file);
+        }
+        action
     }
 
     /// Rows of the open picker, for rendering.
@@ -265,5 +272,36 @@ mod tests {
 
         assert!(state.maybe_reload());
         assert!(state.picker.is_none());
+    }
+
+    #[test]
+    fn a_picker_driven_save_does_not_reset_the_picker_on_the_next_poll() {
+        // Regression: creating a space from inside the picker writes
+        // spaces.json; the next maybe_reload poll must not mistake that for
+        // an external edit and close the picker mid-flow.
+        let folder = TempDir::new("picker-save-folder");
+        let dir = TempDir::new("picker-save-config");
+        let mut state = SpacesState::load(&dir.0);
+        state.picker = Some(PickerState::new());
+
+        // Drive the flow: "new space..." -> name -> emoji (skip) -> folder.
+        // The picker lands on the Target step with the file already saved.
+        for key in [Key::Down, Key::Down, Key::Enter] {
+            state.on_key(key);
+        }
+        for ch in "lab".chars() {
+            state.on_key(Key::Char(ch));
+        }
+        state.on_key(Key::Enter); // name
+        state.on_key(Key::Enter); // emoji skipped
+        for ch in folder.0.to_string_lossy().chars() {
+            state.on_key(Key::Char(ch));
+        }
+        state.on_key(Key::Enter); // folder -> saves spaces.json
+
+        assert_eq!(state.list.len(), 1, "the space was saved");
+        assert!(state.picker.is_some(), "picker still open on target step");
+        assert!(!state.maybe_reload(), "own save must not look external");
+        assert!(state.picker.is_some(), "picker survives the poll");
     }
 }
