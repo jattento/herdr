@@ -769,20 +769,20 @@ pub(crate) fn confirm_close_button_rects(inner: Rect) -> (Rect, Rect) {
 const SPACE_PICKER_POPUP_WIDTH: u16 = 72;
 
 pub(crate) fn space_picker_popup_height(row_count: usize) -> u16 {
-    (row_count as u16).saturating_add(7).clamp(10, 24)
+    (row_count as u16).saturating_add(8).clamp(10, 24)
 }
 
 pub(crate) fn space_picker_max_visible_rows(inner: Rect) -> usize {
-    usize::from(inner.height.saturating_sub(5))
+    usize::from(inner.height.saturating_sub(6))
 }
 
-pub(crate) fn space_picker_button_rects(inner: Rect) -> (Rect, Rect) {
+pub(crate) fn space_picker_button_rects(inner: Rect, primary_label: &str) -> (Rect, Rect) {
     let rects = action_button_row_rects(
         inner,
         &[
             ActionButtonSpec {
                 hint: Some("\u{21b5}"),
-                label: "select",
+                label: primary_label,
             },
             ActionButtonSpec {
                 hint: Some("esc"),
@@ -809,6 +809,7 @@ pub(super) fn space_picker_tone_style(app: &AppState, tone: herdr_spaces::Tone) 
             .add_modifier(Modifier::BOLD),
         herdr_spaces::Tone::Detail => Style::default().fg(p.overlay0),
         herdr_spaces::Tone::DetailSelected => Style::default().fg(p.subtext0).bg(p.surface0),
+        herdr_spaces::Tone::Disabled => Style::default().fg(p.overlay0),
         herdr_spaces::Tone::Error => Style::default().fg(p.red),
     }
 }
@@ -861,7 +862,8 @@ pub(super) fn render_space_picker_overlay(app: &AppState, frame: &mut Frame, are
         ),
     );
 
-    let (select_rect, back_rect) = space_picker_button_rects(inner);
+    let primary_label = picker.primary_action_label();
+    let (select_rect, back_rect) = space_picker_button_rects(inner, primary_label);
     let accent = Style::default()
         .fg(panel_contrast_fg(&app.palette))
         .bg(app.palette.accent)
@@ -870,7 +872,13 @@ pub(super) fn render_space_picker_overlay(app: &AppState, frame: &mut Frame, are
         .fg(app.palette.text)
         .bg(app.palette.surface0)
         .add_modifier(Modifier::BOLD);
-    render_action_button(frame, select_rect, Some("\u{21b5}"), "select", accent);
+    render_action_button(
+        frame,
+        select_rect,
+        Some("\u{21b5}"),
+        primary_label,
+        accent,
+    );
     render_action_button(frame, back_rect, Some("esc"), "back", plain);
 }
 

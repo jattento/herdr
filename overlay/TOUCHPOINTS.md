@@ -112,14 +112,16 @@ Two design choices worth recording, both chosen for the smaller upstream diff:
 
 ### `src/app/input/mod.rs`
 
-- What: one match arm routing `Mode::SpacePicker` key events.
+- What: one match arm routing `Mode::SpacePicker` key events, plus two small
+  arms routing modal clipboard and bracketed paste into the crate.
 - Why here: the TUI key dispatch match is exhaustive over `Mode`.
 - Retire when: same as `src/app/state.rs`.
 
 ### `src/app/input/modal.rs`
 
 - What: `handle_space_picker_key` (translates keys, runs the crate state
-  machine, and executes the returned action) plus the key translation helper.
+  machine, and executes the returned action) plus the key translation helper,
+  including Tab completion.
 - Why here: the action side needs `App` (workspace create, worktree dialog),
   which the crate must not depend on.
 - Retire when: same as `src/app/state.rs`.
@@ -144,7 +146,8 @@ Two design choices worth recording, both chosen for the smaller upstream diff:
 ### `src/ui/dialogs.rs`
 
 - What: the picker modal renderer, its geometry helpers, and the tone-to-style
-  map (also used by the sidebar header).
+  map (also used by the sidebar header), including disabled folder rows and
+  room for crate-composed key hints.
 - Why here: rendering needs ratatui, the palette, and `AppState`.
 - Retire when: same as `src/app/state.rs`.
 

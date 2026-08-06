@@ -219,6 +219,10 @@ impl App {
                 self.insert_worktree_create_text(text);
                 true
             }
+            Mode::SpacePicker => {
+                self.state.spaces.paste(text);
+                true
+            }
             Mode::OpenExistingWorktree => {
                 if !self
                     .state
@@ -715,6 +719,7 @@ pub(crate) fn modal_paste_target_active(state: &AppState) -> bool {
         Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane | Mode::NewLinkedWorktree => {
             true
         }
+        Mode::SpacePicker => true,
         Mode::OpenExistingWorktree => state
             .worktree_open
             .as_ref()
@@ -1014,5 +1019,8 @@ mod tests {
 
         state.mode = Mode::ConfirmClose;
         assert!(!modal_paste_target_active(&state));
+
+        state.mode = Mode::SpacePicker;
+        assert!(modal_paste_target_active(&state));
     }
 }

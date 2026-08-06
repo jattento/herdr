@@ -466,6 +466,7 @@ fn space_picker_key(key: &KeyEvent) -> Option<herdr_spaces::Key> {
         KeyCode::Down => Some(herdr_spaces::Key::Down),
         KeyCode::Char('p') if ctrl => Some(herdr_spaces::Key::Up),
         KeyCode::Char('n') if ctrl => Some(herdr_spaces::Key::Down),
+        KeyCode::Tab => Some(herdr_spaces::Key::Tab),
         KeyCode::Enter => Some(herdr_spaces::Key::Enter),
         KeyCode::Esc => Some(herdr_spaces::Key::Esc),
         KeyCode::Backspace => Some(herdr_spaces::Key::Backspace),

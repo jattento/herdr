@@ -5,6 +5,8 @@
 //! picker state machine. It never depends on herdr; herdr calls in and
 //! translates the returned plain enums into its own actions.
 
+pub mod discovery;
+pub mod emoji;
 pub mod flow;
 pub mod grouping;
 pub mod model;
@@ -27,7 +29,10 @@ pub use view::{Segment, Tone};
 enum Fingerprint {
     #[default]
     Absent,
-    Present { modified: SystemTime, len: u64 },
+    Present {
+        modified: SystemTime,
+        len: u64,
+    },
 }
 
 impl Fingerprint {
@@ -111,6 +116,15 @@ impl SpacesState {
             self.fingerprint = Fingerprint::stat(&self.file);
         }
         action
+    }
+
+    /// Paste single-line text into the open picker's active field.
+    pub fn paste(&mut self, text: &str) {
+        let env = self.env();
+        let Some(picker) = self.picker.as_mut() else {
+            return;
+        };
+        picker.paste(text, &self.list, &env);
     }
 
     /// Rows of the open picker, for rendering.
