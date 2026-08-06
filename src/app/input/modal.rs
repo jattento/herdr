@@ -456,6 +456,26 @@ pub(super) fn leave_modal(state: &mut AppState) {
     }
 }
 
+/// overlay(spaces): translate a key press into a picker key. Arrows and
+/// ctrl-n/ctrl-p move, enter confirms, esc backs up, anything else printable
+/// filters or types.
+fn space_picker_key(key: &KeyEvent) -> Option<herdr_spaces::Key> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Up => Some(herdr_spaces::Key::Up),
+        KeyCode::Down => Some(herdr_spaces::Key::Down),
+        KeyCode::Char('p') if ctrl => Some(herdr_spaces::Key::Up),
+        KeyCode::Char('n') if ctrl => Some(herdr_spaces::Key::Down),
+        KeyCode::Enter => Some(herdr_spaces::Key::Enter),
+        KeyCode::Esc => Some(herdr_spaces::Key::Esc),
+        KeyCode::Backspace => Some(herdr_spaces::Key::Backspace),
+        KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
+            Some(herdr_spaces::Key::Char(c))
+        }
+        _ => None,
+    }
+}
+
 pub(super) const ONBOARDING_WELCOME_ACTIONS: &[ModalActionSpec<ModalAction>] = &[ModalActionSpec {
     action: ModalAction::Continue,
     bindings: &[ModalKeyBinding::Enter],
@@ -1002,6 +1022,43 @@ impl App {
         }
 
         handle_rename_edit_key(&mut self.state, key);
+    }
+
+    /// overlay(spaces): drive the folder-space picker and execute whatever the
+    /// state machine decides.
+    pub(crate) fn handle_space_picker_key(&mut self, key: KeyEvent) {
+        let Some(translated) = space_picker_key(&key) else {
+            return;
+        };
+        match self.state.spaces.on_key(translated) {
+            herdr_spaces::Action::None => {}
+            herdr_spaces::Action::Close => {
+                self.state.spaces.picker = None;
+                leave_modal(&mut self.state);
+            }
+            herdr_spaces::Action::PlainWorkspace => {
+                self.begin_tui_workspace_create("tui.workspace.create");
+                self.state.spaces.picker = None;
+            }
+            herdr_spaces::Action::CreateLocal(cwd) => {
+                self.state.spaces.picker = None;
+                self.runtime_workspace_create(
+                    "tui.workspace.create_space",
+                    crate::api::schema::WorkspaceCreateParams {
+                        cwd: Some(cwd.display().to_string()),
+                        focus: true,
+                        label: None,
+                        env: Default::default(),
+                    },
+                );
+                leave_modal(&mut self.state);
+            }
+            herdr_spaces::Action::CreateWorktree(cwd) => {
+                self.state.spaces.picker = None;
+                leave_modal(&mut self.state);
+                self.open_new_linked_worktree_dialog_for_cwd(cwd);
+            }
+        }
     }
 
     fn save_rename_modal_via_api(&mut self) {

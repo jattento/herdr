@@ -836,6 +836,9 @@ pub enum Mode {
     GlobalMenu,
     KeybindHelp,
     Navigator,
+    // overlay(spaces): folder-space picker shown instead of the plain
+    // new-workspace dialog when spaces.json has entries.
+    SpacePicker,
 }
 
 impl Mode {
@@ -1454,6 +1457,8 @@ pub struct AppState {
     pub worktree_remove: Option<WorktreeRemoveState>,
     pub worktree_directory: std::path::PathBuf,
     pub collapsed_space_keys: std::collections::HashSet<String>,
+    // overlay(spaces): loaded spaces.json plus the open picker, if any.
+    pub spaces: herdr_spaces::SpacesState,
     pub request_complete_onboarding: bool,
     pub name_input: String,
     pub name_input_replace_on_type: bool,
@@ -1817,6 +1822,7 @@ impl AppState {
             worktree_remove: None,
             worktree_directory: std::path::PathBuf::from("/tmp/herdr-worktrees"),
             collapsed_space_keys: std::collections::HashSet::new(),
+            spaces: herdr_spaces::SpacesState::default(),
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,

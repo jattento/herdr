@@ -680,6 +680,7 @@ dependencies = [
  "clap_complete",
  "crossterm",
  "ctrlc",
+ "herdr-spaces",
  "interprocess",
  "jsonc-parser",
  "libc",
@@ -700,6 +701,15 @@ dependencies = [
  "widestring",
  "windows-sys",
  "wmi",
+]
+
+[[package]]
+name = "herdr-spaces"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "unicode-width",
 ]
 
 [[package]]

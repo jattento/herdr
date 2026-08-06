@@ -764,6 +764,116 @@ pub(crate) fn confirm_close_button_rects(inner: Rect) -> (Rect, Rect) {
     (rects[0], rects[1])
 }
 
+// overlay(spaces): folder-space picker. Line composition lives in the overlay
+// crate; this only maps tones onto the palette and draws.
+const SPACE_PICKER_POPUP_WIDTH: u16 = 72;
+
+pub(crate) fn space_picker_popup_height(row_count: usize) -> u16 {
+    (row_count as u16).saturating_add(7).clamp(10, 24)
+}
+
+pub(crate) fn space_picker_max_visible_rows(inner: Rect) -> usize {
+    usize::from(inner.height.saturating_sub(5))
+}
+
+pub(crate) fn space_picker_button_rects(inner: Rect) -> (Rect, Rect) {
+    let rects = action_button_row_rects(
+        inner,
+        &[
+            ActionButtonSpec {
+                hint: Some("\u{21b5}"),
+                label: "select",
+            },
+            ActionButtonSpec {
+                hint: Some("esc"),
+                label: "back",
+            },
+        ],
+        2,
+        inner.height.saturating_sub(1),
+    );
+    (rects[0], rects[1])
+}
+
+pub(super) fn space_picker_tone_style(app: &AppState, tone: herdr_spaces::Tone) -> Style {
+    let p = &app.palette;
+    match tone {
+        herdr_spaces::Tone::Accent => Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+        herdr_spaces::Tone::Text => Style::default().fg(p.text),
+        herdr_spaces::Tone::Dim => Style::default().fg(p.overlay0),
+        herdr_spaces::Tone::Separator => Style::default().fg(p.surface1),
+        herdr_spaces::Tone::Row => Style::default().fg(p.subtext0),
+        herdr_spaces::Tone::RowSelected => Style::default()
+            .fg(p.text)
+            .bg(p.surface0)
+            .add_modifier(Modifier::BOLD),
+        herdr_spaces::Tone::Detail => Style::default().fg(p.overlay0),
+        herdr_spaces::Tone::DetailSelected => Style::default().fg(p.subtext0).bg(p.surface0),
+        herdr_spaces::Tone::Error => Style::default().fg(p.red),
+    }
+}
+
+pub(super) fn render_space_picker_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
+    let Some(picker) = app.spaces.picker.as_ref() else {
+        return;
+    };
+
+    super::dim_background(frame, area);
+    let height = space_picker_popup_height(app.spaces.rows().len());
+    let Some(inner) =
+        render_modal_shell(frame, area, SPACE_PICKER_POPUP_WIDTH, height, &app.palette)
+    else {
+        return;
+    };
+    if inner.height < 6 {
+        return;
+    }
+
+    render_modal_header(
+        frame,
+        Rect::new(inner.x, inner.y, inner.width, 1),
+        picker.step().title(),
+        &app.palette,
+    );
+
+    let max_rows = space_picker_max_visible_rows(inner);
+    let body = app.spaces.picker_lines(inner.width, max_rows);
+    let lines = body
+        .iter()
+        .map(|segments| {
+            Line::from(
+                segments
+                    .iter()
+                    .map(|(text, tone)| {
+                        Span::styled(text.clone(), space_picker_tone_style(app, *tone))
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(lines),
+        Rect::new(
+            inner.x,
+            inner.y.saturating_add(1),
+            inner.width,
+            inner.height.saturating_sub(3),
+        ),
+    );
+
+    let (select_rect, back_rect) = space_picker_button_rects(inner);
+    let accent = Style::default()
+        .fg(panel_contrast_fg(&app.palette))
+        .bg(app.palette.accent)
+        .add_modifier(Modifier::BOLD);
+    let plain = Style::default()
+        .fg(app.palette.text)
+        .bg(app.palette.surface0)
+        .add_modifier(Modifier::BOLD);
+    render_action_button(frame, select_rect, Some("\u{21b5}"), "select", accent);
+    render_action_button(frame, back_rect, Some("esc"), "back", plain);
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -942,5 +1052,44 @@ mod tests {
         assert_eq!(inner.height, super::NEW_LINKED_WORKTREE_POPUP_HEIGHT - 2);
         assert_eq!(create.y, inner.y + inner.height - 1);
         assert_eq!(cancel.y, inner.y + inner.height - 1);
+    }
+
+    // overlay(spaces)
+    #[test]
+    fn space_picker_overlay_renders_rows_and_actions() {
+        let mut app = AppState::test_new();
+        app.spaces.list = vec![herdr_spaces::Space {
+            id: "keyway".into(),
+            name: "keyway".into(),
+            emoji: Some("\u{1f511}".into()),
+            folders: vec![
+                std::path::PathBuf::from("/work/keyway/api"),
+                std::path::PathBuf::from("/work/keyway/web"),
+            ],
+        }];
+        app.spaces.picker = Some(herdr_spaces::PickerState::new());
+
+        let area = Rect::new(0, 0, 100, 30);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        terminal
+            .draw(|frame| super::render_space_picker_overlay(&app, frame, area))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(rendered.contains("new workspace"), "missing title");
+        assert!(rendered.contains("keyway"), "missing space row");
+        assert!(rendered.contains("2 folders"), "missing folder count");
+        assert!(
+            rendered.contains("plain workspace..."),
+            "missing fallback row"
+        );
+        assert!(rendered.contains("new space..."), "missing new space row");
+        assert!(rendered.contains("select"), "missing confirm button");
     }
 }

@@ -124,6 +124,49 @@ impl App {
         self.state.mode = Mode::NewLinkedWorktree;
     }
 
+    /// overlay(spaces): open the new-worktree dialog for a space folder that
+    /// may have no open workspace yet. `source_workspace_id` stays empty, so
+    /// `submit_worktree_create_via_api` sends the source path instead and the
+    /// API resolves the repo (and any existing parent workspace) from it.
+    pub(crate) fn open_new_linked_worktree_dialog_for_cwd(&mut self, cwd: std::path::PathBuf) {
+        let Some(space) = crate::workspace::git_space_metadata(&cwd) else {
+            self.state.config_diagnostic =
+                Some("Herdr worktree actions require a workspace inside a Git work tree.".into());
+            return;
+        };
+        if space.is_linked_worktree {
+            self.state.config_diagnostic =
+                Some("New and open worktree actions start from the repo parent workspace.".into());
+            return;
+        }
+
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_micros().min(u128::from(u64::MAX)) as u64)
+            .unwrap_or(0);
+        let branch = crate::worktree::generated_branch_slug(seed);
+        let checkout_path = crate::worktree::default_checkout_path(
+            &self.state.worktree_directory,
+            &space.repo_name,
+            &branch,
+        );
+        self.state.name_input = branch.clone();
+        self.state.name_input_replace_on_type = true;
+        self.state.worktree_create = Some(WorktreeCreateState {
+            source_workspace_id: String::new(),
+            source_checkout_path: space.repo_root.clone(),
+            source_existing_membership: None,
+            source_repo_root: space.repo_root,
+            repo_key: space.key,
+            repo_name: space.repo_name,
+            branch,
+            checkout_path,
+            error: None,
+            creating: false,
+        });
+        self.state.mode = Mode::NewLinkedWorktree;
+    }
+
     pub(crate) fn open_remove_linked_worktree_confirmation(&mut self, ws_idx: usize) {
         let Some(ws) = self.state.workspaces.get(ws_idx) else {
             return;
@@ -588,12 +631,16 @@ impl App {
         create.error = None;
         let workspace_id = create.source_workspace_id.clone();
         let checkout_path = create.checkout_path.display().to_string();
+        // overlay(spaces): a picker-seeded dialog has no source workspace, so
+        // the repo is resolved from the source path instead.
+        let source_cwd = create.source_repo_root.display().to_string();
+        let from_cwd = workspace_id.is_empty();
 
         let immediate_response = self.runtime_worktree_create_deferred(
             "tui.worktree.create",
             crate::api::schema::WorktreeCreateParams {
-                workspace_id: Some(workspace_id),
-                cwd: None,
+                workspace_id: (!from_cwd).then_some(workspace_id),
+                cwd: from_cwd.then_some(source_cwd),
                 branch: Some(branch),
                 path: Some(checkout_path),
                 base: Some("HEAD".into()),

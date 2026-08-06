@@ -310,6 +310,51 @@ pub(crate) fn next_entry_is_indented_workspace(entries: &[WorkspaceListEntry], i
     )
 }
 
+// overlay(spaces): space headers are rendered above the first card of each run
+// of workspaces that share a space. The row is reserved by the same list math
+// that positions cards, so scrolling and mouse hit-testing stay in sync.
+fn entry_space_index(
+    app: &AppState,
+    entries: &[WorkspaceListEntry],
+    entry_idx: usize,
+) -> Option<usize> {
+    let WorkspaceListEntry::Workspace { ws_idx, .. } = entries.get(entry_idx)?;
+    let ws = app.workspaces.get(*ws_idx)?;
+    herdr_spaces::space_index_for_workspace(
+        &app.spaces.list,
+        ws.worktree_space().map(|space| space.repo_root.as_path()),
+        &ws.identity_cwd,
+    )
+}
+
+/// Header label and workspace count for the run starting at `entry_idx`, or
+/// `None` when this entry continues the previous run or has no space.
+pub(crate) fn space_header_for_entry(
+    app: &AppState,
+    entries: &[WorkspaceListEntry],
+    entry_idx: usize,
+) -> Option<(String, String)> {
+    let (space_idx, run) = herdr_spaces::header_run(entries.len(), entry_idx, |idx| {
+        entry_space_index(app, entries, idx)
+    })?;
+    Some(herdr_spaces::header_label(
+        app.spaces.list.get(space_idx)?,
+        run,
+    ))
+}
+
+fn space_header_rows(app: &AppState, entries: &[WorkspaceListEntry], entry_idx: usize) -> u16 {
+    u16::from(space_header_for_entry(app, entries, entry_idx).is_some())
+}
+
+fn render_space_header(app: &AppState, frame: &mut Frame, area: Rect, label: &str, count: &str) {
+    let spans = herdr_spaces::view::header_segments(label, count, area.width)
+        .into_iter()
+        .map(|(text, tone)| Span::styled(text, super::dialogs::space_picker_tone_style(app, tone)))
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
 pub(crate) fn normalized_workspace_scroll(app: &AppState, area: Rect, requested: usize) -> usize {
     let ws_area = workspace_list_rect(area, app.sidebar_section_split);
     let body = workspace_list_body_rect(ws_area, false);
@@ -473,6 +518,8 @@ fn workspace_list_visible_count(app: &AppState, area: Rect, scroll: usize) -> us
                 )
             }
         };
+        // overlay(spaces): a space header occupies the row above the card.
+        let row_height = row_height.saturating_add(space_header_rows(app, &entries, entry_idx));
         if used_rows.saturating_add(row_height) > body.height {
             break;
         }
@@ -496,6 +543,8 @@ fn workspace_list_bottom_start(app: &AppState, area: Rect) -> usize {
         let gap = workspace_entry_gap(app, &entries, entry_idx);
         let needed = workspace_row_height_in_body(app, workspace, *indented, body.height)
             .saturating_add(gap);
+        // overlay(spaces): a space header occupies the row above the card.
+        let needed = needed.saturating_add(space_header_rows(app, &entries, entry_idx));
         if used_rows.saturating_add(needed) > body.height {
             break;
         }
@@ -685,6 +734,12 @@ pub(crate) fn compute_workspace_list_areas(
                 };
                 let row_height = workspace_row_height_in_body(app, ws, *indented, body.height);
                 let gap = workspace_entry_gap(app, &entries, entry_idx);
+                // overlay(spaces): reserve the header row above this card.
+                let header = space_header_rows(app, &entries, entry_idx);
+                if row_y.saturating_add(header).saturating_add(row_height) > body_bottom {
+                    break;
+                }
+                row_y = row_y.saturating_add(header);
                 if row_y.saturating_add(row_height) > body_bottom {
                     break;
                 }
@@ -1240,6 +1295,20 @@ fn render_workspace_list(
         let ws = &app.workspaces[i];
         let row_y = card.rect.y;
         let row_height = card.rect.height;
+        // overlay(spaces): draw the header in the row reserved above this card.
+        if let Some(entry_idx) = entries.iter().position(
+            |entry| matches!(entry, WorkspaceListEntry::Workspace { ws_idx, .. } if *ws_idx == i),
+        ) {
+            if let Some((label, count)) = space_header_for_entry(app, &entries, entry_idx) {
+                render_space_header(
+                    app,
+                    frame,
+                    Rect::new(card.rect.x, row_y.saturating_sub(1), card.rect.width, 1),
+                    &label,
+                    &count,
+                );
+            }
+        }
         let selected = i == app.selected && is_navigating;
         let is_active = Some(i) == app.active;
         let is_dragged = dragged_ws_idx == Some(i);
@@ -3045,5 +3114,61 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 },
             ]
         );
+    }
+
+    // overlay(spaces)
+    fn workspace_in(name: &str, cwd: &str) -> crate::workspace::Workspace {
+        let mut ws = Workspace::test_new(name);
+        ws.identity_cwd = std::path::PathBuf::from(cwd);
+        ws
+    }
+
+    #[test]
+    fn space_header_reserves_one_row_above_the_first_card_of_a_run() {
+        let mut app = AppState::test_new();
+        app.workspaces = vec![
+            workspace_in("api", "/work/keyway/api"),
+            workspace_in("web", "/work/keyway/web"),
+            workspace_in("notes", "/elsewhere/notes"),
+        ];
+        app.spaces.list = vec![herdr_spaces::Space {
+            id: "keyway".into(),
+            name: "keyway".into(),
+            emoji: None,
+            folders: vec![std::path::PathBuf::from("/work/keyway")],
+        }];
+        app.sidebar_spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+        app.sidebar_spaces.row_gap = 0;
+
+        let area = Rect::new(0, 0, 30, 20);
+        let list_area = workspace_list_rect(area, app.sidebar_section_split);
+        let body = workspace_list_body_rect(list_area, false);
+        app.view.workspace_card_areas = compute_workspace_card_areas(&app, area);
+        let cards = &app.view.workspace_card_areas;
+
+        // One header row above the run, none between its members or before the
+        // ungrouped workspace.
+        assert_eq!(cards[0].rect.y, body.y + 1);
+        assert_eq!(cards[1].rect.y, cards[0].rect.y + cards[0].rect.height);
+        assert_eq!(cards[2].rect.y, cards[1].rect.y + cards[1].rect.height);
+
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_workspace_list(
+                    &app,
+                    &TerminalRuntimeRegistry::new(),
+                    frame,
+                    list_area,
+                    false,
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let header = (0..list_area.width)
+            .map(|x| buffer[(x, body.y)].symbol())
+            .collect::<String>();
+        assert!(header.contains("keyway"), "{header:?}");
+        assert!(header.trim_end().ends_with('2'), "{header:?}");
     }
 }

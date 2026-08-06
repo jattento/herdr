@@ -550,6 +550,8 @@ impl App {
             worktree_remove: None,
             worktree_directory,
             collapsed_space_keys,
+            // overlay(spaces): global spaces.json lives next to config.toml.
+            spaces: herdr_spaces::SpacesState::load(&crate::config::config_dir()),
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
@@ -1183,6 +1185,9 @@ impl App {
         if !self.state.workspaces.is_empty()
             || self.state.mode == Mode::Onboarding
             || self.state.pending_workspace_create_cwd.is_some()
+            // overlay(spaces): same reason as the pending create above, the
+            // picker is choosing the cwd for the first workspace.
+            || self.state.spaces.picker.is_some()
         {
             return false;
         }
@@ -1819,6 +1824,10 @@ impl App {
             }
             Mode::OpenExistingWorktree => {
                 self.handle_worktree_open_key(key_event);
+            }
+            // overlay(spaces)
+            Mode::SpacePicker => {
+                self.handle_space_picker_key(key_event);
             }
             Mode::ConfirmRemoveWorktree => {
                 self.handle_worktree_remove_key(key_event);
@@ -2664,6 +2673,53 @@ mod tests {
         assert!(app.state.workspaces.is_empty());
 
         app.handle_rename_key_via_api(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()));
+        assert!(app.state.workspaces.is_empty());
+        assert!(app.state.pending_workspace_create_cwd.is_none());
+    }
+
+    // overlay(spaces)
+    fn app_with_space() -> App {
+        let mut app = test_app();
+        app.state.prompt_new_workspace_name = true;
+        app.state.spaces.list = vec![herdr_spaces::Space {
+            id: "keyway".into(),
+            name: "keyway".into(),
+            emoji: None,
+            folders: vec![std::path::PathBuf::from("/work/keyway")],
+        }];
+        app
+    }
+
+    #[test]
+    fn space_picker_opens_for_new_workspace_and_hands_back_to_the_plain_dialog() {
+        let mut app = app_with_space();
+
+        app.begin_tui_workspace_create("test.workspace.create");
+        assert_eq!(app.state.mode, Mode::SpacePicker);
+        assert!(app.state.spaces.picker.is_some());
+        // The picker is choosing the cwd, so no default workspace appears
+        // behind it.
+        assert!(!app.ensure_default_workspace());
+        assert!(app.state.workspaces.is_empty());
+
+        // Rows are: the space, "plain workspace...", "new space...".
+        app.handle_space_picker_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()));
+        app.handle_space_picker_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()));
+
+        assert_eq!(app.state.mode, Mode::RenameWorkspace);
+        assert!(app.state.spaces.picker.is_none());
+        assert!(app.state.pending_workspace_create_cwd.is_some());
+    }
+
+    #[test]
+    fn space_picker_esc_closes_without_creating_a_workspace() {
+        let mut app = app_with_space();
+        app.begin_tui_workspace_create("test.workspace.create");
+
+        app.handle_space_picker_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()));
+
+        assert_eq!(app.state.mode, Mode::Navigate);
+        assert!(app.state.spaces.picker.is_none());
         assert!(app.state.workspaces.is_empty());
         assert!(app.state.pending_workspace_create_cwd.is_none());
     }

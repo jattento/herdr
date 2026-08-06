@@ -97,6 +97,15 @@ impl App {
     }
 
     pub(super) fn begin_tui_workspace_create(&mut self, request_id: &'static str) {
+        // overlay(spaces): with a configured space list, pick a space folder
+        // first. Re-entering from the picker itself falls through to the
+        // upstream behavior below.
+        if !self.state.spaces.is_empty() && self.state.mode != Mode::SpacePicker {
+            self.state.spaces.picker = Some(herdr_spaces::PickerState::new());
+            self.state.mode = Mode::SpacePicker;
+            return;
+        }
+
         if self.state.prompt_new_workspace_name {
             let follow_cwd = self.workspace_creation_source().and_then(|ws_idx| {
                 self.focused_pane_cwd_in_workspace(ws_idx)
